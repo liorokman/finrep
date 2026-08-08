@@ -160,7 +160,7 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 		}
 
 		dateStr := getColumnValue(row, headerMap, preset.DateColumn)
-		payeeRaw := getColumnValue(row, headerMap, preset.PayeeColumn)
+		payeeRaw := getPayeeValue(row, headerMap, preset)
 
 		if dateStr == "" {
 			failedRows = append(failedRows, StagingFailedRow{
@@ -233,6 +233,33 @@ func (p *CSVParser) ParseCSV(accountID string, rawBytes []byte, preset *models.I
 		return nil, 0, err
 	}
 	return staged.PassedTransactions, staged.DuplicateCount, nil
+}
+
+func getPayeeValue(row []string, headerMap map[string]int, preset *models.ImportPreset) string {
+	var parts []string
+
+	// Primary column (supports multi-column names delimited by '+' or ',')
+	if preset.PayeeColumn != "" {
+		cols := strings.FieldsFunc(preset.PayeeColumn, func(r rune) bool {
+			return r == '+' || r == ','
+		})
+		for _, col := range cols {
+			val := getColumnValue(row, headerMap, strings.TrimSpace(col))
+			if val != "" {
+				parts = append(parts, val)
+			}
+		}
+	}
+
+	// Optional secondary column
+	if preset.PayeeColumn2 != nil && *preset.PayeeColumn2 != "" {
+		val2 := getColumnValue(row, headerMap, *preset.PayeeColumn2)
+		if val2 != "" {
+			parts = append(parts, val2)
+		}
+	}
+
+	return strings.Join(parts, " - ")
 }
 
 func getColumnValue(row []string, headerMap map[string]int, colName string) string {

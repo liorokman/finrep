@@ -59,3 +59,49 @@ func TestCSVParser_IsraeliInstallments(t *testing.T) {
 		t.Errorf("expected total_installments 12, got %v", tx.TotalInstallments)
 	}
 }
+
+func TestCSVParser_ConcatenatedPayeeColumns(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	sqlDB, err := database.InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer sqlDB.Close()
+
+	db := database.New(sqlDB)
+
+	acc := &models.Account{
+		Name:        "Bank Account",
+		AccountType: models.AccountTypeBank,
+		Institution: "Leumi",
+		Currency:    "ILS",
+	}
+	if err := db.CreateAccount(acc); err != nil {
+		t.Fatalf("failed to create account: %v", err)
+	}
+
+	csvData := []byte("Date,Description,Extended Description,Amount\n2026-08-01,Supermarket,Branch #104 Purchase,-250.00\n")
+	payeeCol2 := "Extended Description"
+	preset := &models.ImportPreset{
+		DateColumn:   "Date",
+		PayeeColumn:  "Description",
+		PayeeColumn2: &payeeCol2,
+		AmountColumn: func() *string { s := "Amount"; return &s }(),
+		HasHeader:    true,
+	}
+
+	p := NewCSVParser(db)
+	txs, _, err := p.ParseCSV(acc.ID, csvData, preset)
+	if err != nil {
+		t.Fatalf("ParseCSV failed: %v", err)
+	}
+	if len(txs) != 1 {
+		t.Fatalf("expected 1 transaction, got %d", len(txs))
+	}
+	expected := "Supermarket - Branch #104 Purchase"
+	if txs[0].PayeeRaw != expected {
+		t.Errorf("expected concatenated payee '%s', got '%s'", expected, txs[0].PayeeRaw)
+	}
+}

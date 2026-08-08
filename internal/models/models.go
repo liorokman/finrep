@@ -125,6 +125,7 @@ type ImportPreset struct {
 	DebitColumn               *string `json:"debit_column,omitempty"`
 	CreditColumn              *string `json:"credit_column,omitempty"`
 	PayeeColumn               string  `json:"payee_column"`
+	PayeeColumn2              *string `json:"payee_column_2,omitempty"`
 	CategoryColumn            *string `json:"category_column,omitempty"`
 	NotesColumn               *string `json:"notes_column,omitempty"`
 	HasHeader                 bool    `json:"has_header"`

@@ -1684,6 +1684,7 @@ let wizardInspectResult: { columns: string[]; sample_rows: string[][]; total_row
 let wizardMapping = {
   date_col: '',
   payee_col: '',
+  payee_col_2: '',
   amount_mode: 'amount', // 'amount' | 'debit_credit'
   amount_col: '',
   debit_col: '',
@@ -1805,7 +1806,7 @@ function renderImportView() {
           <div class="space-y-4 pt-4 border-t border-slate-800">
             <h4 class="text-xs font-bold text-white uppercase tracking-wider">Map Required CSV Columns</h4>
 
-            <div class="grid grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label class="block text-xs font-semibold text-slate-300 mb-1">Date Column *</label>
                 <select id="w1-date-col" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
@@ -1816,10 +1817,20 @@ function renderImportView() {
               </div>
 
               <div>
-                <label class="block text-xs font-semibold text-slate-300 mb-1">Payee / Merchant Column *</label>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Primary Description / Payee Column *</label>
                 <select id="w1-payee-col" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
                   ${wizardInspectResult.columns.map(c => `
                     <option value="${c}" ${wizardMapping.payee_col === c ? 'selected' : ''}>${c}</option>
+                  `).join('')}
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Secondary Column (Optional - Concatenated)</label>
+                <select id="w1-payee-col-2" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+                  <option value="">(None - Single Column)</option>
+                  ${wizardInspectResult.columns.map(c => `
+                    <option value="${c}" ${wizardMapping.payee_col_2 === c ? 'selected' : ''}>${c}</option>
                   `).join('')}
                 </select>
               </div>
@@ -2381,7 +2392,9 @@ function attachEvents() {
         // Auto-guess column mappings
         const findCol = (terms: string[]) => cols.find(c => terms.some(t => c.toLowerCase().includes(t))) || cols[0] || '';
         wizardMapping.date_col = findCol(['תאריך', 'date']);
-        wizardMapping.payee_col = findCol(['תיאור', 'payee', 'merchant', 'name', 'פרטים']);
+        const descCols = cols.filter(c => ['תיאור', 'payee', 'merchant', 'name', 'פרטים', 'description', 'extended', 'הרחבה', 'פירוט'].some(t => c.toLowerCase().includes(t)));
+        wizardMapping.payee_col = descCols[0] || findCol(['תיאור', 'payee', 'merchant', 'name', 'פרטים']);
+        wizardMapping.payee_col_2 = descCols.length > 1 ? descCols[1] : '';
         wizardMapping.amount_col = findCol(['סכום', 'amount', 'total']);
         wizardMapping.debit_col = findCol(['חיוב', 'debit']);
         wizardMapping.credit_col = findCol(['זיכוי', 'credit']);
@@ -2424,6 +2437,7 @@ function attachEvents() {
 
     wizardMapping.date_col = (document.getElementById('w1-date-col') as HTMLSelectElement)?.value || wizardMapping.date_col;
     wizardMapping.payee_col = (document.getElementById('w1-payee-col') as HTMLSelectElement)?.value || wizardMapping.payee_col;
+    wizardMapping.payee_col_2 = (document.getElementById('w1-payee-col-2') as HTMLSelectElement)?.value || '';
     if (wizardMapping.amount_mode === 'amount') {
       wizardMapping.amount_col = (document.getElementById('w1-amount-col') as HTMLSelectElement)?.value || wizardMapping.amount_col;
     } else {
@@ -2440,6 +2454,9 @@ function attachEvents() {
       fd.append('account_id', wizardAccountID);
       fd.append('date_column', wizardMapping.date_col);
       fd.append('payee_column', wizardMapping.payee_col);
+      if (wizardMapping.payee_col_2) {
+        fd.append('payee_column_2', wizardMapping.payee_col_2);
+      }
       if (wizardMapping.amount_mode === 'amount') {
         fd.append('amount_column', wizardMapping.amount_col);
       } else {

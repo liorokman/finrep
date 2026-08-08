@@ -332,6 +332,9 @@ func (h *Handler) ImportCSV(c echo.Context) error {
 		PayeeColumn: c.FormValue("payee_column"),
 		HasHeader:   c.FormValue("has_header") != "false",
 	}
+	if payeeCol2 := c.FormValue("payee_column_2"); payeeCol2 != "" {
+		preset.PayeeColumn2 = &payeeCol2
+	}
 	if debitCol := c.FormValue("debit_column"); debitCol != "" {
 		preset.DebitColumn = &debitCol
 	}
@@ -413,6 +416,9 @@ func (h *Handler) StageCSV(c echo.Context) error {
 		DateColumn:  c.FormValue("date_column"),
 		PayeeColumn: c.FormValue("payee_column"),
 		HasHeader:   c.FormValue("has_header") != "false",
+	}
+	if payeeCol2 := c.FormValue("payee_column_2"); payeeCol2 != "" {
+		preset.PayeeColumn2 = &payeeCol2
 	}
 	if debitCol := c.FormValue("debit_column"); debitCol != "" {
 		preset.DebitColumn = &debitCol
