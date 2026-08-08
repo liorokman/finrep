@@ -514,7 +514,7 @@ func (s *LocalAIService) runBatchWorker(ctx context.Context, txs []models.Transa
 			} else if item.SuggestedCategory != nil {
 				_, _ = s.db.Exec(`
 					UPDATE transactions
-					SET suggested_category_he = ?, suggested_category_en = ?, suggested_category_type = ?, categorized_by = 'LOCALAI', is_reviewed = 1, updated_at = CURRENT_TIMESTAMP
+					SET suggested_category_he = ?, suggested_category_en = ?, suggested_category_type = ?, categorized_by = 'LOCALAI', updated_at = CURRENT_TIMESTAMP
 					WHERE id = ?
 				`, item.SuggestedCategory.NameHE, item.SuggestedCategory.NameEN, item.SuggestedCategory.CategoryType, item.TransactionID)
 				slog.Info("Stored category suggestion for transaction", "tx_id", item.TransactionID, "suggestion_en", item.SuggestedCategory.NameEN)

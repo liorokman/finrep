@@ -442,7 +442,7 @@ func (db *DB) GetUncategorizedOrUnreviewedTransactions(limit int) ([]models.Tran
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
-		WHERE (t.category_id IS NULL OR t.category_id = '' OR c.name_en = 'Uncategorized' OR c.name_he = 'ללא קטגוריה') AND t.is_reviewed = 0
+		WHERE (t.category_id IS NULL OR t.category_id = '' OR c.name_en = 'Uncategorized' OR c.name_he = 'ללא קטגוריה')
 		ORDER BY t.date DESC
 	`
 	var args []interface{}

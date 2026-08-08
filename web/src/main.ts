@@ -209,6 +209,10 @@ let widgetFilters = {
   cashflowFromMonth: defaultRange.fromStr,
   cashflowToMonth: defaultRange.toStr,
   donutAcc: '',
+  donutFromMonth: defaultRange.fromStr,
+  donutToMonth: defaultRange.toStr,
+  networthFromMonth: defaultRange.fromStr,
+  networthToMonth: defaultRange.toStr,
   payoffAcc: '',
   budgetAcc: '',
   subscriptionsAcc: '',
@@ -295,10 +299,10 @@ async function loadData() {
       fetch('/api/v1/categories'),
       fetch(`/api/v1/reports/budget-vs-actual?account_id=${widgetFilters.budgetAcc}`),
       fetch(`/api/v1/reports/subscriptions?account_id=${widgetFilters.subscriptionsAcc}`),
-      fetch(`/api/v1/reports/category-donut?account_id=${widgetFilters.donutAcc}`),
+      fetch(`/api/v1/reports/category-donut?account_id=${widgetFilters.donutAcc}&start_date=${widgetFilters.donutFromMonth}&end_date=${widgetFilters.donutToMonth}`),
       fetch(`/api/v1/reports/cash-flow?account_id=${widgetFilters.cashflowAcc}&start_date=${widgetFilters.cashflowFromMonth}&end_date=${widgetFilters.cashflowToMonth}`),
       fetch('/api/v1/auth/info'),
-      fetch('/api/v1/reports/net-worth'),
+      fetch(`/api/v1/reports/net-worth?start_date=${widgetFilters.networthFromMonth}&end_date=${widgetFilters.networthToMonth}`),
       fetch(`/api/v1/reports/cc-payoff?account_id=${widgetFilters.payoffAcc}`),
       fetch('/api/v1/reports/foreign-currency'),
       fetch('/api/v1/reports/anomalies'),
@@ -610,9 +614,35 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
           </div>
         </div>
         <div class="glass-panel p-6 space-y-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-bold text-sm text-white">Category Expense Breakdown</h3>
-            ${renderWidgetAccountSelector('widget-acc-donut', widgetFilters.donutAcc)}
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+            <div>
+              <h3 class="font-bold text-sm text-white flex items-center gap-2">
+                <span>Category Expense Breakdown</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-mono">
+                  ${widgetFilters.donutFromMonth} to ${widgetFilters.donutToMonth}
+                </span>
+              </h3>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <!-- Quick Presets -->
+              <div class="inline-flex rounded-md border border-slate-800 bg-slate-950 p-0.5 text-[11px]">
+                <button id="btn-donut-preset-3m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition">3M</button>
+                <button id="btn-donut-preset-6m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition">6M</button>
+                <button id="btn-donut-preset-12m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition">12M</button>
+              </div>
+
+              <!-- Month Pickers -->
+              <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-[11px]">
+                <span class="text-slate-400">From:</span>
+                <input type="month" id="widget-donut-from" value="${widgetFilters.donutFromMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+                <span class="text-slate-400">To:</span>
+                <input type="month" id="widget-donut-to" value="${widgetFilters.donutToMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+              </div>
+
+              <!-- Account Selector -->
+              ${renderWidgetAccountSelector('widget-acc-donut', widgetFilters.donutAcc)}
+            </div>
           </div>
           <div class="h-64 relative">
             <canvas id="donut-chart-canvas"></canvas>
@@ -623,8 +653,32 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
       <!-- Charts Row 2: Net Worth Trend + CC Payoff -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="glass-panel p-6 space-y-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-bold text-sm text-white">Net Worth Over Time</h3>
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+            <div>
+              <h3 class="font-bold text-sm text-white flex items-center gap-2">
+                <span>Net Worth Over Time</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-mono">
+                  ${netWorthData.length} Points (${widgetFilters.networthFromMonth} to ${widgetFilters.networthToMonth})
+                </span>
+              </h3>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <!-- Quick Presets -->
+              <div class="inline-flex rounded-md border border-slate-800 bg-slate-950 p-0.5 text-[11px]">
+                <button id="btn-networth-preset-3m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 3 ? 'bg-brand-600 text-white font-bold' : ''}">3M</button>
+                <button id="btn-networth-preset-6m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 6 ? 'bg-brand-600 text-white font-bold' : ''}">6M</button>
+                <button id="btn-networth-preset-12m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 12 ? 'bg-brand-600 text-white font-bold' : ''}">12M</button>
+              </div>
+
+              <!-- Month Pickers -->
+              <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-[11px]">
+                <span class="text-slate-400">From:</span>
+                <input type="month" id="widget-networth-from" value="${widgetFilters.networthFromMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+                <span class="text-slate-400">To:</span>
+                <input type="month" id="widget-networth-to" value="${widgetFilters.networthToMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+              </div>
+            </div>
           </div>
           <div class="h-64 relative">
             <canvas id="networth-chart-canvas"></canvas>
@@ -2839,6 +2893,77 @@ function attachEvents() {
     await loadData();
     renderApp();
   });
+  const handleDonutDateChange = async () => {
+    const fromInput = document.getElementById('widget-donut-from') as HTMLInputElement;
+    const toInput = document.getElementById('widget-donut-to') as HTMLInputElement;
+    if (!fromInput || !toInput) return;
+    const newFrom = fromInput.value;
+    const newTo = toInput.value;
+    if (newFrom && newTo && (newFrom !== widgetFilters.donutFromMonth || newTo !== widgetFilters.donutToMonth)) {
+      widgetFilters.donutFromMonth = newFrom;
+      widgetFilters.donutToMonth = newTo;
+      await loadData();
+      renderApp();
+    }
+  };
+  document.getElementById('widget-donut-from')?.addEventListener('change', handleDonutDateChange);
+  document.getElementById('widget-donut-from')?.addEventListener('input', handleDonutDateChange);
+  document.getElementById('widget-donut-to')?.addEventListener('change', handleDonutDateChange);
+  document.getElementById('widget-donut-to')?.addEventListener('input', handleDonutDateChange);
+
+  const setDonutPreset = async (monthsCount: number) => {
+    const now = new Date();
+    const toYear = now.getFullYear();
+    const toMonth = String(now.getMonth() + 1).padStart(2, '0');
+    widgetFilters.donutToMonth = `${toYear}-${toMonth}`;
+
+    const fromDate = new Date(now.getFullYear(), now.getMonth() - (monthsCount - 1), 1);
+    const fromYear = fromDate.getFullYear();
+    const fromMonth = String(fromDate.getMonth() + 1).padStart(2, '0');
+    widgetFilters.donutFromMonth = `${fromYear}-${fromMonth}`;
+
+    await loadData();
+    renderApp();
+  };
+  document.getElementById('btn-donut-preset-3m')?.addEventListener('click', () => setDonutPreset(3));
+  document.getElementById('btn-donut-preset-6m')?.addEventListener('click', () => setDonutPreset(6));
+  document.getElementById('btn-donut-preset-12m')?.addEventListener('click', () => setDonutPreset(12));
+
+  const handleNetWorthDateChange = async () => {
+    const fromInput = document.getElementById('widget-networth-from') as HTMLInputElement;
+    const toInput = document.getElementById('widget-networth-to') as HTMLInputElement;
+    if (!fromInput || !toInput) return;
+    const newFrom = fromInput.value;
+    const newTo = toInput.value;
+    if (newFrom && newTo && (newFrom !== widgetFilters.networthFromMonth || newTo !== widgetFilters.networthToMonth)) {
+      widgetFilters.networthFromMonth = newFrom;
+      widgetFilters.networthToMonth = newTo;
+      await loadData();
+      renderApp();
+    }
+  };
+  document.getElementById('widget-networth-from')?.addEventListener('change', handleNetWorthDateChange);
+  document.getElementById('widget-networth-from')?.addEventListener('input', handleNetWorthDateChange);
+  document.getElementById('widget-networth-to')?.addEventListener('change', handleNetWorthDateChange);
+  document.getElementById('widget-networth-to')?.addEventListener('input', handleNetWorthDateChange);
+
+  const setNetWorthPreset = async (monthsCount: number) => {
+    const now = new Date();
+    const toYear = now.getFullYear();
+    const toMonth = String(now.getMonth() + 1).padStart(2, '0');
+    widgetFilters.networthToMonth = `${toYear}-${toMonth}`;
+
+    const fromDate = new Date(now.getFullYear(), now.getMonth() - (monthsCount - 1), 1);
+    const fromYear = fromDate.getFullYear();
+    const fromMonth = String(fromDate.getMonth() + 1).padStart(2, '0');
+    widgetFilters.networthFromMonth = `${fromYear}-${fromMonth}`;
+
+    await loadData();
+    renderApp();
+  };
+  document.getElementById('btn-networth-preset-3m')?.addEventListener('click', () => setNetWorthPreset(3));
+  document.getElementById('btn-networth-preset-6m')?.addEventListener('click', () => setNetWorthPreset(6));
+  document.getElementById('btn-networth-preset-12m')?.addEventListener('click', () => setNetWorthPreset(12));
   document.getElementById('widget-acc-payoff')?.addEventListener('change', async (e) => {
     widgetFilters.payoffAcc = (e.target as HTMLSelectElement).value;
     await loadData();

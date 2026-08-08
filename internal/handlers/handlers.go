@@ -557,7 +557,10 @@ func (h *Handler) ReconcileLumpSum(c echo.Context) error {
 }
 
 func (h *Handler) GetNetWorthReport(c echo.Context) error {
-	res, err := h.reportSvc.GetNetWorthTrend()
+	res, err := h.reportSvc.GetNetWorthTrend(
+		c.QueryParam("start_date"),
+		c.QueryParam("end_date"),
+	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

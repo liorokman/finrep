@@ -90,7 +90,7 @@ type AnomalyItem struct {
 	Reason        string  `json:"reason"`
 }
 
-func (s *ReportService) GetNetWorthTrend() ([]NetWorthPoint, error) {
+func (s *ReportService) GetNetWorthTrend(startDate, endDate string) ([]NetWorthPoint, error) {
 	// Get all accounts and their opening balances
 	accounts, err := s.db.GetAccounts()
 	if err != nil {
@@ -165,6 +165,22 @@ func (s *ReportService) GetNetWorthTrend() ([]NetWorthPoint, error) {
 		}}, nil
 	}
 
+	if startDate != "" || endDate != "" {
+		var filteredPoints []NetWorthPoint
+		for _, p := range points {
+			if startDate != "" && p.Date < startDate {
+				continue
+			}
+			if endDate != "" && p.Date > endDate {
+				continue
+			}
+			filteredPoints = append(filteredPoints, p)
+		}
+		if len(filteredPoints) > 0 {
+			return filteredPoints, nil
+		}
+	}
+
 	return points, nil
 }
 
@@ -235,12 +251,22 @@ func (s *ReportService) GetCategoryDonut(accountID, startDate, endDate string) (
 		args = append(args, accountID)
 	}
 	if startDate != "" {
-		query += " AND t.date >= ?"
-		args = append(args, startDate)
+		if len(startDate) == 7 {
+			query += " AND strftime('%Y-%m', t.date) >= ?"
+			args = append(args, startDate)
+		} else {
+			query += " AND t.date >= ?"
+			args = append(args, startDate)
+		}
 	}
 	if endDate != "" {
-		query += " AND t.date <= ?"
-		args = append(args, endDate)
+		if len(endDate) == 7 {
+			query += " AND strftime('%Y-%m', t.date) <= ?"
+			args = append(args, endDate)
+		} else {
+			query += " AND t.date <= ?"
+			args = append(args, endDate)
+		}
 	}
 	query += " GROUP BY c.id ORDER BY total DESC"
 

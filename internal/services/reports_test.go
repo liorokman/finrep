@@ -68,7 +68,7 @@ func TestReportService_NewReports(t *testing.T) {
 	_ = rows
 
 	// Test Net Worth Trend
-	nwPoints, err := svc.GetNetWorthTrend()
+	nwPoints, err := svc.GetNetWorthTrend("", "")
 	if err != nil {
 		t.Fatalf("GetNetWorthTrend failed: %v", err)
 	}
