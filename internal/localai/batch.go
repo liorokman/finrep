@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ func New(db *database.DB) *LocalAIService {
 	return &LocalAIService{
 		db: db,
 		client: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 180 * time.Second,
 		},
 	}
 }
@@ -70,10 +71,10 @@ Respond ONLY with valid JSON matching this schema:
   ]
 }`
 
-// CategorizeBatch sends unreviewed transactions to LocalAI in batches
-func (s *LocalAIService) CategorizeBatch(ctx context.Context, txs []models.Transaction) error {
+// CategorizeBatch sends unreviewed transactions to LocalAI in 5-item micro-batches
+func (s *LocalAIService) CategorizeBatch(ctx context.Context, txs []models.Transaction) (int, error) {
 	if len(txs) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	url, err := s.db.GetSetting("localai_url")
@@ -88,94 +89,124 @@ func (s *LocalAIService) CategorizeBatch(ctx context.Context, txs []models.Trans
 
 	categories, err := s.db.GetCategories()
 	if err != nil {
-		return fmt.Errorf("failed to fetch categories for LocalAI: %w", err)
+		return 0, fmt.Errorf("failed to fetch categories for LocalAI: %w", err)
 	}
 
-	// Prepare user prompt payload
-	var inputBatch []map[string]interface{}
-	for _, t := range txs {
-		inputBatch = append(inputBatch, map[string]interface{}{
-			"id":       t.ID,
-			"payee":    t.PayeeRaw,
-			"amount":   t.Amount,
-			"date":     t.Date,
-			"currency": t.Currency,
-		})
+	baseUrl := strings.TrimRight(url, "/")
+	var endpoint string
+	if strings.HasSuffix(baseUrl, "/v1/chat/completions") {
+		endpoint = baseUrl
+	} else if strings.HasSuffix(baseUrl, "/v1") {
+		endpoint = baseUrl + "/chat/completions"
+	} else {
+		endpoint = baseUrl + "/v1/chat/completions"
 	}
 
-	reqBody := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "system", "content": SystemPrompt},
-			{"role": "user", "content": fmt.Sprintf("Categories: %v\n\nTransactions to categorize: %v", categoriesJSON(categories), jsonString(inputBatch))},
-		},
-		"temperature": 0.1,
-	}
+	const chunkSize = 5
+	totalProcessed := 0
+	numChunks := (len(txs) + chunkSize - 1) / chunkSize
 
-	jsonBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return err
-	}
-
-	endpoint := strings.TrimRight(url, "/") + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBytes))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("LocalAI REST request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("LocalAI returned HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var chatResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return fmt.Errorf("failed to decode LocalAI response: %w", err)
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return fmt.Errorf("empty choice array from LocalAI")
-	}
-
-	rawContent := chatResp.Choices[0].Message.Content
-	cleanJSON := StripMarkdownCodeFences(rawContent)
-
-	var batchResp LocalAIBatchResponse
-	if err := json.Unmarshal([]byte(cleanJSON), &batchResp); err != nil {
-		return fmt.Errorf("failed to unmarshal LocalAI categorization JSON: %w (content: %s)", err, cleanJSON)
-	}
-
-	// Apply categorizations & suggestions to database
-	for _, item := range batchResp.Categorizations {
-		if item.CategoryID != nil && *item.CategoryID != "" {
-			_ = s.db.UpdateTransactionCategory(item.TransactionID, item.CategoryID, false, models.CategorizedByLocalAI)
-		} else if item.SuggestedCategory != nil {
-			_, _ = s.db.Exec(`
-				UPDATE transactions
-				SET suggested_category_he = ?, suggested_category_en = ?, suggested_category_type = ?, categorized_by = 'LOCALAI', updated_at = CURRENT_TIMESTAMP
-				WHERE id = ?
-			`, item.SuggestedCategory.NameHE, item.SuggestedCategory.NameEN, item.SuggestedCategory.CategoryType, item.TransactionID)
+	for i := 0; i < len(txs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(txs) {
+			end = len(txs)
 		}
+		chunk := txs[i:end]
+		chunkNum := (i / chunkSize) + 1
+
+		slog.Info("Processing LocalAI micro-batch", "batch", chunkNum, "total_batches", numChunks, "count", len(chunk), "endpoint", endpoint, "model", model)
+
+		var inputBatch []map[string]interface{}
+		for _, t := range chunk {
+			inputBatch = append(inputBatch, map[string]interface{}{
+				"id":       t.ID,
+				"payee":    t.PayeeRaw,
+				"amount":   t.Amount,
+				"date":     t.Date,
+				"currency": t.Currency,
+			})
+		}
+
+		reqBody := map[string]interface{}{
+			"model": model,
+			"messages": []map[string]string{
+				{"role": "system", "content": SystemPrompt},
+				{"role": "user", "content": fmt.Sprintf("Categories: %v\n\nTransactions to categorize: %v", categoriesJSON(categories), jsonString(inputBatch))},
+			},
+			"temperature": 0.1,
+		}
+
+		jsonBytes, err := json.Marshal(reqBody)
+		if err != nil {
+			return totalProcessed, fmt.Errorf("batch %d JSON encode failed: %w", chunkNum, err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBytes))
+		if err != nil {
+			return totalProcessed, fmt.Errorf("batch %d request creation failed: %w", chunkNum, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return totalProcessed, fmt.Errorf("batch %d/%d connection failed to %s: %w", chunkNum, numChunks, endpoint, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return totalProcessed, fmt.Errorf("batch %d/%d LocalAI (%s) returned HTTP %d: %s", chunkNum, numChunks, endpoint, resp.StatusCode, string(body))
+		}
+
+		var chatResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+
+		decodeErr := json.NewDecoder(resp.Body).Decode(&chatResp)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return totalProcessed, fmt.Errorf("batch %d/%d decode error: %w", chunkNum, numChunks, decodeErr)
+		}
+
+		if len(chatResp.Choices) == 0 {
+			return totalProcessed, fmt.Errorf("batch %d/%d empty response from LocalAI", chunkNum, numChunks)
+		}
+
+		rawContent := chatResp.Choices[0].Message.Content
+		cleanJSON := StripMarkdownCodeFences(rawContent)
+
+		var batchResp LocalAIBatchResponse
+		if err := json.Unmarshal([]byte(cleanJSON), &batchResp); err != nil {
+			slog.Warn("Failed to unmarshal LocalAI batch response JSON", "batch", chunkNum, "error", err, "raw", cleanJSON)
+			totalProcessed += len(chunk)
+			continue
+		}
+
+		// Apply categorizations & suggestions to database immediately
+		for _, item := range batchResp.Categorizations {
+			if item.CategoryID != nil && *item.CategoryID != "" {
+				_ = s.db.UpdateTransactionCategory(item.TransactionID, item.CategoryID, false, models.CategorizedByLocalAI)
+			} else if item.SuggestedCategory != nil {
+				_, _ = s.db.Exec(`
+					UPDATE transactions
+					SET suggested_category_he = ?, suggested_category_en = ?, suggested_category_type = ?, categorized_by = 'LOCALAI', updated_at = CURRENT_TIMESTAMP
+					WHERE id = ?
+				`, item.SuggestedCategory.NameHE, item.SuggestedCategory.NameEN, item.SuggestedCategory.CategoryType, item.TransactionID)
+			}
+		}
+
+		totalProcessed += len(chunk)
+		slog.Info("Micro-batch saved to database", "batch", chunkNum, "total_batches", numChunks, "processed", totalProcessed)
 	}
 
-	return nil
+	return totalProcessed, nil
 }
 
 func StripMarkdownCodeFences(s string) string {
@@ -201,3 +232,68 @@ func jsonString(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+func (s *LocalAIService) TestConnection(ctx context.Context, customUrl, customModel, customApiKey string) (string, error) {
+	url := customUrl
+	if url == "" {
+		url, _ = s.db.GetSetting("localai_url")
+	}
+	if url == "" {
+		url = "http://localhost:8080"
+	}
+
+	model := customModel
+	if model == "" {
+		model, _ = s.db.GetSetting("localai_model")
+	}
+	if model == "" {
+		model = "llama-3-8b"
+	}
+
+	apiKey := customApiKey
+	if apiKey == "" {
+		apiKey, _ = s.db.GetSetting("localai_api_key")
+	}
+
+	baseUrl := strings.TrimRight(url, "/")
+	var endpoint string
+	if strings.HasSuffix(baseUrl, "/v1/chat/completions") {
+		endpoint = baseUrl
+	} else if strings.HasSuffix(baseUrl, "/v1") {
+		endpoint = baseUrl + "/chat/completions"
+	} else {
+		endpoint = baseUrl + "/v1/chat/completions"
+	}
+
+	reqBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "user", "content": "Hello! Reply with 'OK'."},
+		},
+		"max_tokens": 10,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(b))
+	if err != nil {
+		return "", fmt.Errorf("invalid request URL (%s): %w", endpoint, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("cannot connect to LocalAI at %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("LocalAI at %s returned HTTP %d: %s", endpoint, resp.StatusCode, string(body))
+	}
+
+	return fmt.Sprintf("Successfully connected to LocalAI endpoint (%s) using model '%s'", endpoint, model), nil
+}
+

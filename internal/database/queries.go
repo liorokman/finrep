@@ -202,6 +202,22 @@ func (db *DB) CreateTransaction(t *models.Transaction) error {
 	if t.ID == "" {
 		t.ID = uuid.New().String()
 	}
+
+	// Auto-match categorization rules if category is unset
+	if (t.CategoryID == nil || *t.CategoryID == "") && t.PayeeRaw != "" {
+		var matchedCatID string
+		err := db.QueryRow(`
+			SELECT category_id FROM categorization_rules
+			WHERE ? LIKE '%' || pattern || '%'
+			ORDER BY priority DESC LIMIT 1
+		`, t.PayeeRaw).Scan(&matchedCatID)
+		if err == nil && matchedCatID != "" {
+			t.CategoryID = &matchedCatID
+			t.CategorizedBy = models.CategorizedByRule
+			t.IsReviewed = true
+		}
+	}
+
 	if t.CategorizedBy == "" {
 		t.CategorizedBy = models.CategorizedByUnset
 	}
@@ -275,10 +291,14 @@ func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int,
 		countArgs = append(countArgs, f.CategoryID)
 	}
 	if f.Unreviewed != nil {
+		isReviewedVal := 0
+		if !*f.Unreviewed {
+			isReviewedVal = 1
+		}
 		query += " AND t.is_reviewed = ?"
 		countQuery += " AND t.is_reviewed = ?"
-		args = append(args, *f.Unreviewed)
-		countArgs = append(countArgs, *f.Unreviewed)
+		args = append(args, isReviewedVal)
+		countArgs = append(countArgs, isReviewedVal)
 	}
 	if f.StartDate != "" {
 		query += " AND t.date >= ?"
@@ -337,6 +357,43 @@ func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int,
 	}
 
 	return transactions, total, nil
+}
+
+func (db *DB) GetUncategorizedOrUnreviewedTransactions(limit int) ([]models.Transaction, error) {
+	query := `
+		SELECT t.id, t.account_id, a.name as account_name, t.date, t.amount, t.currency,
+		       t.original_amount, t.original_currency, t.current_installment, t.total_installments,
+		       t.payee_raw, t.payee_cleaned, t.category_id, c.name_he, c.name_en,
+		       t.suggested_category_he, t.suggested_category_en, t.suggested_category_type,
+		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.created_at, t.updated_at
+		FROM transactions t
+		JOIN accounts a ON t.account_id = a.id
+		LEFT JOIN categories c ON t.category_id = c.id
+		WHERE (t.category_id IS NULL OR t.category_id = '' OR t.is_reviewed = 0)
+		ORDER BY t.date DESC
+		LIMIT ?
+	`
+	rows, err := db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []models.Transaction
+	for rows.Next() {
+		var t models.Transaction
+		if err := rows.Scan(
+			&t.ID, &t.AccountID, &t.AccountName, &t.Date, &t.Amount, &t.Currency,
+			&t.OriginalAmount, &t.OriginalCurrency, &t.CurrentInstallment, &t.TotalInstallments,
+			&t.PayeeRaw, &t.PayeeCleaned, &t.CategoryID, &t.CategoryNameHE, &t.CategoryNameEN,
+			&t.SuggestedCategoryHE, &t.SuggestedCategoryEN, &t.SuggestedCategoryType,
+			&t.Notes, &t.ImportHash, &t.IsReviewed, &t.CategorizedBy, &t.CreatedAt, &t.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, t)
+	}
+	return results, nil
 }
 
 func (db *DB) GetTransactionByID(id string) (*models.Transaction, error) {

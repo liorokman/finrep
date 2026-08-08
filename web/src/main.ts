@@ -318,7 +318,7 @@ function renderApp() {
     <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
       ${activeTab === 'dashboard' ? renderDashboard(netWorth, totalAssets, totalLiabilities) : ''}
       ${activeTab === 'accounts' ? renderAccountsView() : ''}
-      ${activeTab === 'transactions' ? renderTransactionsView(pendingSuggestionsCount) : ''}
+      ${activeTab === 'transactions' ? renderTransactionsView() : ''}
       ${activeTab === 'categories' ? renderCategoriesView() : ''}
       ${activeTab === 'import' ? renderImportView() : ''}
       ${activeTab === 'reconciliation' ? renderReconciliationView() : ''}
@@ -699,17 +699,25 @@ function renderAccountModal() {
 
 // ---- Transactions View ----
 
-function renderTransactionsView(pendingCount: number) {
+function renderTransactionsView() {
+  const pendingCount = transactionsList.filter(t => t.suggested_category_en).length;
+  const uncategorizedCount = transactionsList.filter(t => !t.category_id && !t.suggested_category_en).length;
   const totalPages = Math.ceil(txTotal / TX_PAGE_SIZE);
   const currentPage = txPage + 1;
+
+  let subtitleHTML = `<span class="text-emerald-400 font-semibold">✓ All transactions categorized</span>`;
+  if (pendingCount > 0) {
+    subtitleHTML = `<span class="text-amber-400 font-semibold">⚠️ ${pendingCount} AI suggestions pending review</span>`;
+  } else if (uncategorizedCount > 0) {
+    subtitleHTML = `<span class="text-amber-400 font-semibold">⚠️ ${uncategorizedCount} uncategorized transactions (select category below or run LocalAI)</span>`;
+  }
+
   return `
     <div class="space-y-6">
       <div class="flex items-center justify-between">
         <div>
           <h2 class="text-2xl font-bold text-white">Transaction Ledger</h2>
-          <p class="text-xs text-slate-400 mt-1">
-            ${pendingCount > 0 ? `<span class="text-amber-400 font-semibold">⚠️ ${pendingCount} pending AI suggestions requiring review</span>` : 'All transactions categorized'}
-          </p>
+          <p class="text-xs text-slate-400 mt-1">${subtitleHTML}</p>
         </div>
         <span class="text-xs text-slate-400">${txTotal} total transactions</span>
       </div>
@@ -779,9 +787,14 @@ function renderTransactionTableRows(txs: Transaction[]) {
                     </div>
                   </div>
                 ` : `
-                  <span class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 text-xs">
-                    ${t.category_name_en || t.category_name_he || 'Uncategorized'}
-                  </span>
+                  <select class="tx-cat-select bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-brand-500 cursor-pointer" data-txid="${t.id}">
+                    <option value="" ${!t.category_id ? 'selected' : ''}>⚠️ Uncategorized</option>
+                    ${categoriesList.map(c => `
+                      <option value="${c.id}" ${t.category_id === c.id ? 'selected' : ''}>
+                        ${c.name_en} (${c.name_he})
+                      </option>
+                    `).join('')}
+                  </select>
                 `}
               </td>
               <td class="py-3 px-4 text-right font-bold font-mono ${(t.amount ?? 0) < 0 ? 'text-rose-400' : 'text-emerald-400'}">
@@ -1400,9 +1413,12 @@ function renderSettingsView() {
         </div>
       </div>
 
-      <div class="pt-4 border-t border-slate-800 space-y-3">
-        <button id="btn-save-settings" class="w-full bg-brand-600 hover:bg-brand-500 text-white font-bold py-2.5 rounded-lg shadow-lg shadow-brand-500/20 text-xs transition">
+      <div class="pt-4 border-t border-slate-800 flex gap-3">
+        <button id="btn-save-settings" class="flex-1 bg-brand-600 hover:bg-brand-500 text-white font-bold py-2.5 rounded-lg shadow-lg shadow-brand-500/20 text-xs transition">
           💾 Save Settings
+        </button>
+        <button id="btn-test-localai" class="flex-1 bg-slate-800 hover:bg-slate-700 text-purple-300 border border-purple-500/30 font-semibold py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-2">
+          <span>🔌 Test LocalAI Connection</span>
         </button>
       </div>
 
@@ -1849,6 +1865,36 @@ function attachEvents() {
     }
   });
 
+  // ---- LocalAI Connection Test ----
+  document.getElementById('btn-test-localai')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-test-localai')!;
+    const url = (document.getElementById('setting-localai-url') as HTMLInputElement)?.value;
+    const model = (document.getElementById('setting-localai-model') as HTMLInputElement)?.value;
+    const key = (document.getElementById('setting-localai-key') as HTMLInputElement)?.value;
+
+    btn.innerHTML = '⏳ Testing connection...';
+    (btn as HTMLButtonElement).disabled = true;
+
+    try {
+      const res = await fetch('/api/v1/categorize/localai/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localai_url: url, localai_model: model, localai_api_key: key }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'Connection successful!', 'success');
+      } else {
+        showToast(`LocalAI Test Error: ${data.error || res.statusText}`, 'error');
+      }
+    } catch {
+      showToast('Network error testing LocalAI connection', 'error');
+    } finally {
+      btn.innerHTML = '🔌 Test LocalAI Connection';
+      (btn as HTMLButtonElement).disabled = false;
+    }
+  });
+
   // ---- LocalAI Batch ----
   document.getElementById('btn-trigger-ai')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-trigger-ai')!;
@@ -1856,16 +1902,16 @@ function attachEvents() {
     (btn as HTMLButtonElement).disabled = true;
     try {
       const res = await fetch('/api/v1/categorize/localai', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const data = await res.json();
         showToast(`LocalAI: ${data.status || 'Categorization complete'}`, 'success');
         await loadData();
         renderApp();
       } else {
-        showToast('Categorization failed or LocalAI endpoint unreachable', 'error');
+        showToast(`LocalAI Error: ${data.error || res.statusText}`, 'error');
       }
-    } catch {
-      showToast('Error triggering LocalAI batch categorization', 'error');
+    } catch (err: any) {
+      showToast(`Error triggering LocalAI: ${err.message || err}`, 'error');
     } finally {
       btn.innerHTML = '✨ Run LocalAI';
       (btn as HTMLButtonElement).disabled = false;
@@ -1907,6 +1953,34 @@ function attachEvents() {
         showToast('Category suggestion rejected', 'info');
       } else {
         showToast('Failed to reject suggestion', 'error');
+      }
+    });
+  });
+
+  // ---- Inline Category Selectors ----
+  document.querySelectorAll('.tx-cat-select').forEach(select => {
+    select.addEventListener('change', async (e) => {
+      const el = e.currentTarget as HTMLSelectElement;
+      const txid = el.getAttribute('data-txid');
+      const catID = el.value || null;
+      if (!txid) return;
+
+      const res = await fetch(`/api/v1/transactions/${txid}/category`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category_id: catID,
+          categorized_by: catID ? 'MANUAL' : 'UNSET',
+          is_reviewed: catID ? true : false,
+        }),
+      });
+
+      if (res.ok) {
+        await loadData();
+        renderApp();
+        showToast(catID ? 'Category updated' : 'Category cleared', 'success');
+      } else {
+        showToast('Failed to update category', 'error');
       }
     });
   });

@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -72,6 +74,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.POST("/import/stage", h.StageCSV)
 	api.POST("/import/commit", h.CommitCSV)
 	api.POST("/categorize/localai", h.CategorizeLocalAI)
+	api.POST("/categorize/localai/test", h.TestLocalAIConnection)
 
 	// Reconciliation
 	api.GET("/reconciliation/candidates", h.GetReconciliationCandidates)
@@ -434,27 +437,50 @@ func (h *Handler) CommitCSV(c echo.Context) error {
 }
 
 func (h *Handler) CategorizeLocalAI(c echo.Context) error {
-	unreviewed := true
-	txs, _, err := h.db.QueryTransactions(database.TransactionFilter{
-		Unreviewed: &unreviewed,
-		Limit:      50,
-	})
+	slog.Info("CategorizeLocalAI endpoint invoked")
+	txs, err := h.db.GetUncategorizedOrUnreviewedTransactions(50)
 	if err != nil {
+		slog.Error("Failed to fetch uncategorized transactions for LocalAI", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	slog.Info("Fetched candidate transactions for LocalAI categorization", "count", len(txs))
+
 	if len(txs) == 0 {
+		slog.Info("No uncategorized or unreviewed transactions found")
 		return c.JSON(http.StatusOK, map[string]string{"status": "No unreviewed transactions to categorize"})
 	}
 
-	if err := h.localAI.CategorizeBatch(c.Request().Context(), txs); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	processed, err := h.localAI.CategorizeBatch(c.Request().Context(), txs)
+	if err != nil {
+		slog.Error("LocalAI batch categorization failed", "error", err, "processed_so_far", processed)
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("Categorized %d transactions before error: %s", processed, err.Error()),
+		})
 	}
 
+	slog.Info("Successfully completed LocalAI batch categorization", "processed", processed)
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"status":     "Batch categorization complete",
-		"processed": len(txs),
+		"status":    fmt.Sprintf("Categorized %d transactions in 5-item micro-batches", processed),
+		"processed": processed,
 	})
+}
+
+func (h *Handler) TestLocalAIConnection(c echo.Context) error {
+	var body struct {
+		LocalAIURL    string `json:"localai_url"`
+		LocalAIModel  string `json:"localai_model"`
+		LocalAIAPIKey string `json:"localai_api_key"`
+	}
+	_ = c.Bind(&body)
+
+	msg, err := h.localAI.TestConnection(c.Request().Context(), body.LocalAIURL, body.LocalAIModel, body.LocalAIAPIKey)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": msg})
 }
 
 func (h *Handler) GetReconciliationCandidates(c echo.Context) error {
