@@ -1,0 +1,43 @@
+version: '3'
+
+tasks:
+  default:
+    deps: [build]
+
+  build-ui:
+    desc: Build frontend Vite + Tailwind UI assets
+    dir: web
+    cmds:
+      - npm install
+      - npm run build
+
+  build:
+    desc: Build single-binary Go executable
+    deps: [build-ui]
+    cmds:
+      - go build -o finrep ./cmd/server
+
+  dev:
+    desc: Run server in dev mode with debug logging and OIDC bypass
+    cmds:
+      - go run ./cmd/server --log-level=debug --oidc-enabled=false --port=8080
+
+  run-mcp:
+    desc: Run in MCP stdio transport mode
+    cmds:
+      - go run ./cmd/server --mode=mcp
+
+  test:
+    desc: Run all Go unit and integration tests
+    cmds:
+      - go test -v ./...
+
+  docker-build:
+    desc: Build multi-stage Docker container image
+    cmds:
+      - docker build -t finrep:latest .
+
+  docker-up:
+    desc: Start Docker container environment
+    cmds:
+      - docker-compose up -d

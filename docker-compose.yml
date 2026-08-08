@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  finrep:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finrep
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - LOG_LEVEL=info
+      - MODE=web
+      - DB_PATH=/app/data/finrep.db
+      - OIDC_ENABLED=true
+      - OIDC_ISSUER=https://auth.example.com/application/o/finrep/
+      - OIDC_CLIENT_ID=finrep-app
+    volumes:
+      - finrep-data:/app/data
+
+volumes:
+  finrep-data:
+    name: finrep-data
