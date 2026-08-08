@@ -133,18 +133,88 @@ let txLimit = 25;
 // Transactions Filter state
 let txFilterAccountID = '';
 let txFilterCategoryType = '';
+let txFilterCategoryIDs: string[] = [];
 let txFilterStartDate = '';
 let txFilterEndDate = '';
 let txFilterSearch = '';
+let isCatDropdownOpen = false;
+let isUnauthenticated = false;
+
+// Auto-Categorization state
+interface BatchDetail {
+  index: number;
+  status: string;
+  tx_count: number;
+  error?: string;
+  results?: Array<{
+    transaction_id: string;
+    payee_raw?: string;
+    date?: string;
+    amount?: number;
+    currency?: string;
+    category_id?: string;
+    category_name_en?: string;
+    category_name_he?: string;
+    suggested_category?: { name_he: string; name_en: string; category_type: string };
+    confidence?: number;
+  }>;
+  completed_at?: string;
+}
+
+interface CategorizationStatus {
+  running: boolean;
+  canceled: boolean;
+  processed: number;
+  total: number;
+  current_batch: number;
+  total_batches: number;
+  last_error?: string;
+  batches?: BatchDetail[];
+}
+
+let categorizationStatus: CategorizationStatus = {
+  running: false,
+  canceled: false,
+  processed: 0,
+  total: 0,
+  current_batch: 0,
+  total_batches: 0,
+  batches: [],
+};
+
+let autoCatPrompt = '';
+let autoCatDefaultPrompt = '';
+let selectedBatchResults: BatchDetail | null = null;
+let autoCatPollTimer: any = null;
+
+function getDefaultMonthRange() {
+  const now = new Date();
+  const toYear = now.getFullYear();
+  const toMonth = String(now.getMonth() + 1).padStart(2, '0');
+  const toStr = `${toYear}-${toMonth}`;
+
+  const fromDate = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+  const fromYear = fromDate.getFullYear();
+  const fromMonth = String(fromDate.getMonth() + 1).padStart(2, '0');
+  const fromStr = `${fromYear}-${fromMonth}`;
+
+  return { fromStr, toStr };
+}
+
+const defaultRange = getDefaultMonthRange();
 
 // Per-widget filter state
 let widgetFilters = {
   cashflowAcc: '',
+  cashflowFromMonth: defaultRange.fromStr,
+  cashflowToMonth: defaultRange.toStr,
   donutAcc: '',
   payoffAcc: '',
   budgetAcc: '',
   subscriptionsAcc: '',
   momAcc: '',
+  momFromMonth: defaultRange.fromStr,
+  momToMonth: defaultRange.toStr,
 };
 
 function renderWidgetAccountSelector(id: string, currentValue: string) {
@@ -219,28 +289,32 @@ async function loadData() {
     if (txFilterSearch) txParams.set('search', txFilterSearch);
 
     const [accRes, txRes, catRes, bvaRes, subRes, donutRes, cfRes, authRes,
-           nwRes, ccRes, fxRes, anomRes, momRes, sankeyRes, settingsRes] = await Promise.all([
+           nwRes, ccRes, fxRes, anomRes, momRes, sankeyRes, settingsRes, promptRes, statusRes] = await Promise.all([
       fetch('/api/v1/accounts'),
       fetch(`/api/v1/transactions?${txParams.toString()}`),
       fetch('/api/v1/categories'),
       fetch(`/api/v1/reports/budget-vs-actual?account_id=${widgetFilters.budgetAcc}`),
       fetch(`/api/v1/reports/subscriptions?account_id=${widgetFilters.subscriptionsAcc}`),
       fetch(`/api/v1/reports/category-donut?account_id=${widgetFilters.donutAcc}`),
-      fetch(`/api/v1/reports/cash-flow?account_id=${widgetFilters.cashflowAcc}`),
+      fetch(`/api/v1/reports/cash-flow?account_id=${widgetFilters.cashflowAcc}&start_date=${widgetFilters.cashflowFromMonth}&end_date=${widgetFilters.cashflowToMonth}`),
       fetch('/api/v1/auth/info'),
       fetch('/api/v1/reports/net-worth'),
       fetch(`/api/v1/reports/cc-payoff?account_id=${widgetFilters.payoffAcc}`),
       fetch('/api/v1/reports/foreign-currency'),
       fetch('/api/v1/reports/anomalies'),
-      fetch(`/api/v1/reports/mom-heatmap?account_id=${widgetFilters.momAcc}`),
+      fetch(`/api/v1/reports/mom-heatmap?account_id=${widgetFilters.momAcc}&start_date=${widgetFilters.momFromMonth}&end_date=${widgetFilters.momToMonth}`),
       fetch('/api/v1/reports/sankey'),
       fetch('/api/v1/settings'),
+      fetch('/api/v1/categorize/prompt'),
+      fetch('/api/v1/categorize/status'),
     ]);
 
     if (accRes.status === 401 || txRes.status === 401) {
-      window.location.href = '/auth/login';
+      isUnauthenticated = true;
+      if (authRes.ok) authInfo = await authRes.json();
       return;
     }
+    isUnauthenticated = false;
 
     if (accRes.ok) accountsList = (await accRes.json()) || [];
     if (txRes.ok) {
@@ -261,6 +335,14 @@ async function loadData() {
     if (momRes.ok) momHeatmapData = (await momRes.json()) || [];
     if (sankeyRes.ok) sankeyData = (await sankeyRes.json()) || [];
     if (settingsRes.ok) settingsData = (await settingsRes.json()) || {};
+    if (promptRes && promptRes.ok) {
+      const pData = await promptRes.json();
+      autoCatPrompt = pData.prompt || '';
+      autoCatDefaultPrompt = pData.default_prompt || '';
+    }
+    if (statusRes && statusRes.ok) {
+      categorizationStatus = await statusRes.json();
+    }
   } catch (e) {
     console.error('Failed to fetch data from API server', e);
   }
@@ -274,6 +356,7 @@ async function loadTransactions() {
     });
     if (txFilterAccountID) params.set('account_id', txFilterAccountID);
     if (txFilterCategoryType) params.set('category_type', txFilterCategoryType);
+    if (txFilterCategoryIDs.length > 0) params.set('category_ids', txFilterCategoryIDs.join(','));
     if (txFilterStartDate) params.set('start_date', txFilterStartDate);
     if (txFilterEndDate) params.set('end_date', txFilterEndDate);
     if (txFilterSearch) params.set('search', txFilterSearch);
@@ -295,6 +378,50 @@ async function loadTransactions() {
 
 // ---- App Shell ----
 
+function renderLoginView() {
+  return `
+    <div class="min-h-[65vh] flex items-center justify-center py-12 px-4">
+      <div class="glass-panel p-8 sm:p-12 max-w-md w-full text-center space-y-6 shadow-2xl relative overflow-hidden border-slate-700/80">
+        <!-- Background Glow Accent -->
+        <div class="absolute -top-16 -left-16 w-40 h-40 bg-brand-500/15 rounded-full blur-3xl pointer-events-none"></div>
+        <div class="absolute -bottom-16 -right-16 w-40 h-40 bg-purple-500/15 rounded-full blur-3xl pointer-events-none"></div>
+
+        <!-- Logo Icon -->
+        <div class="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-tr from-brand-600 to-brand-500 flex items-center justify-center text-3xl font-extrabold text-white shadow-xl shadow-brand-500/25">
+          $
+        </div>
+
+        <div>
+          <h2 class="text-2xl font-extrabold text-white tracking-tight">FinRep Ledger</h2>
+          <p class="text-xs text-slate-400 mt-1">Financial Reporting &amp; Intelligent Ledger</p>
+        </div>
+
+        <div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800 text-left space-y-2">
+          <div class="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            Single Sign-On (SSO) Required
+          </div>
+          <p class="text-[11px] text-slate-400 leading-relaxed">
+            This application is protected with OpenID Connect (OIDC). Authenticate with your SSO identity provider to access financial reports and ledger data.
+          </p>
+        </div>
+
+        <div class="pt-2">
+          <a id="btn-login-oidc" href="/auth/login" onclick="window.location.href='/auth/login'; return true;" class="w-full inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 text-white font-bold text-sm shadow-xl shadow-brand-500/25 hover:shadow-brand-500/40 transition duration-200 group cursor-pointer">
+            <span>🔑 Log in with Single Sign-On (OIDC)</span>
+            <span class="text-xs group-hover:translate-x-0.5 transition-transform">→</span>
+          </a>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800/80 text-[11px] text-slate-500 flex items-center justify-center gap-2">
+          <span>Shielded by</span>
+          <span class="font-semibold text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">Authentik OIDC (PKCE 2.0)</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderApp() {
   const app = document.getElementById('app');
   if (!app) return;
@@ -312,6 +439,8 @@ function renderApp() {
   const netWorth = totalAssets - totalLiabilities;
   const pendingSuggestionsCount = transactionsList.filter(t => t.suggested_category_en).length;
 
+  const showLoginView = isUnauthenticated || (authInfo?.oidc_enabled && !authInfo?.user);
+
   app.innerHTML = `
     <!-- Top Navigation Header -->
     <header class="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50">
@@ -326,53 +455,59 @@ function renderApp() {
           </div>
         </div>
 
-        <nav class="flex items-center gap-1 bg-slate-950/60 p-1.5 rounded-xl border border-slate-800/60 flex-wrap">
-          ${renderNavButton('dashboard', '📊 Dashboard')}
-          ${renderNavButton('accounts', '🏦 Accounts')}
-          ${renderNavButton('transactions', '💳 Transactions')}
-          ${renderNavButton('categories', '🏷️ Categories')}
-          ${renderNavButton('import', '📤 Import')}
-          ${renderNavButton('reconciliation', '🔗 Reconciliation')}
-          ${renderNavButton('settings', '⚙️ Settings')}
-        </nav>
+        ${!showLoginView ? `
+          <nav class="flex items-center gap-1 bg-slate-950/60 p-1.5 rounded-xl border border-slate-800/60 flex-wrap">
+            ${renderNavButton('dashboard', '📊 Dashboard')}
+            ${renderNavButton('accounts', '🏦 Accounts')}
+            ${renderNavButton('transactions', '💳 Transactions')}
+            ${renderNavButton('categories', '🏷️ Categories')}
+            ${renderNavButton('autocat', '✨ Auto-Categorization')}
+            ${renderNavButton('import', '📤 Import')}
+            ${renderNavButton('reconciliation', '🔗 Reconciliation')}
+            ${renderNavButton('settings', '⚙️ Settings')}
+          </nav>
+        ` : ''}
 
         <div class="flex items-center gap-3">
           ${authInfo?.user ? `
-            <div class="flex items-center gap-2">
-              <span class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+            <div class="flex items-center gap-2.5">
+              <span class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-200 border border-slate-700 flex items-center gap-1.5 font-medium shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
                 👤 ${authInfo.user.name || authInfo.user.email}
               </span>
               ${authInfo.oidc_enabled ? `
-                <a href="/auth/logout" class="text-xs text-rose-400 hover:text-rose-300 font-medium transition px-2 py-1 rounded bg-rose-500/10 border border-rose-500/20">
-                  Logout
+                <a href="/auth/logout" class="text-xs text-rose-300 hover:text-rose-200 font-semibold transition px-3 py-1.5 rounded-lg bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25 flex items-center gap-1 shadow-sm">
+                  <span>🚪 Logout</span>
                 </a>
               ` : ''}
             </div>
           ` : `
-            <a href="/auth/login" class="bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold px-3.5 py-2 rounded-lg shadow-lg transition">
-              🔑 Log in via OIDC
-            </a>
+            <span class="text-xs text-slate-400 font-medium px-3 py-1.5 rounded-lg bg-slate-800/60 border border-slate-700/60 flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
+              Single Sign-On
+            </span>
           `}
-          <button id="btn-trigger-ai" class="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-semibold px-3.5 py-2 rounded-lg shadow-lg shadow-purple-500/20 transition flex items-center gap-2">
-            <span>✨ Run LocalAI</span>
-          </button>
         </div>
       </div>
     </header>
 
     <!-- Main Content Area -->
     <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
-      ${activeTab === 'dashboard' ? renderDashboard(netWorth, totalAssets, totalLiabilities) : ''}
-      ${activeTab === 'accounts' ? renderAccountsView() : ''}
-      ${activeTab === 'transactions' ? renderTransactionsView() : ''}
-      ${activeTab === 'categories' ? renderCategoriesView() : ''}
-      ${activeTab === 'import' ? renderImportView() : ''}
-      ${activeTab === 'reconciliation' ? renderReconciliationView() : ''}
-      ${activeTab === 'settings' ? renderSettingsView() : ''}
+      ${showLoginView ? renderLoginView() : `
+        ${activeTab === 'dashboard' ? renderDashboard(netWorth, totalAssets, totalLiabilities) : ''}
+        ${activeTab === 'accounts' ? renderAccountsView() : ''}
+        ${activeTab === 'transactions' ? renderTransactionsView() : ''}
+        ${activeTab === 'categories' ? renderCategoriesView() : ''}
+        ${activeTab === 'autocat' ? renderAutoCategorizationView() : ''}
+        ${activeTab === 'import' ? renderImportView() : ''}
+        ${activeTab === 'reconciliation' ? renderReconciliationView() : ''}
+        ${activeTab === 'settings' ? renderSettingsView() : ''}
+      `}
     </main>
 
     ${showAddAccountModal ? renderAccountModal() : ''}
     ${showAddCategoryModal || editingCategory ? renderCategoryModal() : ''}
+    ${selectedBatchResults ? renderBatchResultsModal() : ''}
 
     <!-- Footer -->
     <footer class="border-t border-slate-800/60 py-6 text-center text-xs text-slate-500">
@@ -439,9 +574,36 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
       <!-- Charts Row 1: Cash Flow + Category Donut -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="glass-panel p-6 space-y-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-bold text-sm text-white">Monthly Cash Flow (Income vs Expenses)</h3>
-            ${renderWidgetAccountSelector('widget-acc-cashflow', widgetFilters.cashflowAcc)}
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+            <div>
+              <h3 class="font-bold text-sm text-white flex items-center gap-2">
+                <span>Monthly Cash Flow</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-mono">
+                  ${cashFlowChartData.length} Months (${widgetFilters.cashflowFromMonth} to ${widgetFilters.cashflowToMonth})
+                </span>
+              </h3>
+              <p class="text-xs text-slate-400 mt-0.5">Income vs Expenses breakdown</p>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <!-- Quick Presets -->
+              <div class="inline-flex rounded-md border border-slate-800 bg-slate-950 p-0.5 text-[11px]">
+                <button id="btn-cashflow-preset-3m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${cashFlowChartData.length === 3 ? 'bg-brand-600 text-white font-bold' : ''}">3M</button>
+                <button id="btn-cashflow-preset-6m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${cashFlowChartData.length === 6 ? 'bg-brand-600 text-white font-bold' : ''}">6M</button>
+                <button id="btn-cashflow-preset-12m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${cashFlowChartData.length === 12 ? 'bg-brand-600 text-white font-bold' : ''}">12M</button>
+              </div>
+
+              <!-- Month Pickers -->
+              <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-[11px]">
+                <span class="text-slate-400">From:</span>
+                <input type="month" id="widget-cashflow-from" value="${widgetFilters.cashflowFromMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+                <span class="text-slate-400">To:</span>
+                <input type="month" id="widget-cashflow-to" value="${widgetFilters.cashflowToMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+              </div>
+
+              <!-- Account Selector -->
+              ${renderWidgetAccountSelector('widget-acc-cashflow', widgetFilters.cashflowAcc)}
+            </div>
           </div>
           <div class="h-64 relative">
             <canvas id="cashflow-chart-canvas"></canvas>
@@ -532,31 +694,59 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
 
       <!-- MoM Heatmap -->
       <div class="glass-panel p-6 space-y-4">
-        <div class="flex items-center justify-between">
-          <h3 class="font-bold text-sm text-white">Month-over-Month Spending Heatmap</h3>
-          ${renderWidgetAccountSelector('widget-acc-mom', widgetFilters.momAcc)}
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-3">
+          <div>
+            <h3 class="font-bold text-sm text-white flex items-center gap-2">
+              <span>Month-over-Month Spending Heatmap</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-mono">
+                ${momMonths.length} Months (${widgetFilters.momFromMonth} to ${widgetFilters.momToMonth})
+              </span>
+            </h3>
+            <p class="text-xs text-slate-400 mt-0.5">Track category expense trends month by month</p>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- Quick Presets -->
+            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950 p-0.5 text-[11px]">
+              <button id="btn-mom-preset-3m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${momMonths.length === 3 ? 'bg-brand-600 text-white font-bold' : ''}">3M</button>
+              <button id="btn-mom-preset-6m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${momMonths.length === 6 ? 'bg-brand-600 text-white font-bold' : ''}">6M</button>
+              <button id="btn-mom-preset-12m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${momMonths.length === 12 ? 'bg-brand-600 text-white font-bold' : ''}">12M</button>
+            </div>
+
+            <!-- Month Pickers -->
+            <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-[11px]">
+              <span class="text-slate-400">From:</span>
+              <input type="month" id="widget-mom-from" value="${widgetFilters.momFromMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+              <span class="text-slate-400">To:</span>
+              <input type="month" id="widget-mom-to" value="${widgetFilters.momToMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+            </div>
+
+            <!-- Account Selector -->
+            ${renderWidgetAccountSelector('widget-acc-mom', widgetFilters.momAcc)}
+          </div>
         </div>
+
         ${momHeatmapData.length === 0
-          ? `<p class="text-xs text-slate-500">No categorized expense data yet.</p>`
+          ? `<p class="text-xs text-slate-500 py-6 text-center">No categorized expense data found for selected month range.</p>`
           : `<div id="mom-heatmap-container" class="overflow-x-auto">
-              <table class="w-full text-xs">
+              <table class="w-full text-xs border-collapse">
                 <thead>
-                  <tr>
-                    <th class="text-left py-2 pr-4 text-slate-400 font-medium w-40">Category</th>
-                    ${momMonths.map(m => `<th class="text-center py-2 px-2 text-slate-400 font-medium">${m}</th>`).join('')}
+                  <tr class="border-b border-slate-800">
+                    <th class="text-left py-2.5 pr-4 text-slate-400 font-medium sticky left-0 bg-slate-950/95 z-10 min-w-[140px]">Category</th>
+                    ${momMonths.map(m => `<th class="text-center py-2.5 px-2 text-slate-400 font-medium font-mono min-w-[75px]">${m}</th>`).join('')}
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-800/40" id="mom-heatmap-tbody">
                   ${momHeatmapData.map(row => `
-                    <tr class="hover:bg-slate-900/30 transition">
-                      <td class="py-2 pr-4 text-slate-300 font-medium flex items-center gap-2">
+                    <tr class="hover:bg-slate-900/40 transition">
+                      <td class="py-2.5 pr-4 text-slate-300 font-medium flex items-center gap-2 sticky left-0 bg-slate-950/95 z-10 min-w-[140px]">
                         <span class="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0" style="background:${row.color_hex}"></span>
-                        ${row.category_name}
+                        <span class="truncate">${row.category_name}</span>
                       </td>
                       ${row.months.map(cell => {
                         const intensity = maxMoM > 0 ? cell.amount / maxMoM : 0;
                         const alpha = (0.1 + intensity * 0.75).toFixed(2);
-                        return `<td class="py-2 px-2 text-center rounded" style="background:${cell.amount > 0 ? `rgba(244,63,94,${alpha})` : 'transparent'}">
+                        return `<td class="py-2.5 px-2 text-center rounded font-mono min-w-[75px]" style="background:${cell.amount > 0 ? `rgba(244,63,94,${alpha})` : 'transparent'}">
                           ${cell.amount > 0 ? formatMoney(cell.amount) : '-'}
                         </td>`;
                       }).join('')}
@@ -770,7 +960,21 @@ function renderTransactionsView() {
   const uncategorizedCount = transactionsList.filter(t => !t.category_id && !t.suggested_category_en).length;
   const totalPages = Math.max(1, Math.ceil(txTotal / txLimit));
   const currentPage = txPage + 1;
-  const hasActiveFilters = Boolean(txFilterAccountID || txFilterCategoryType || txFilterStartDate || txFilterEndDate || txFilterSearch);
+  const hasActiveFilters = Boolean(txFilterAccountID || txFilterCategoryType || txFilterCategoryIDs.length > 0 || txFilterStartDate || txFilterEndDate || txFilterSearch);
+
+  const uncategorizedCat = {
+    id: 'UNCATEGORIZED',
+    name_en: 'Uncategorized',
+    name_he: 'ללא קטגוריה',
+    color_hex: '#F59E0B',
+    category_type: ''
+  };
+
+  const filteredCategories = txFilterCategoryType
+    ? categoriesList.filter(c => c.category_type === txFilterCategoryType)
+    : categoriesList;
+
+  const availableCategories = [uncategorizedCat, ...filteredCategories];
 
   let subtitleHTML = `<span class="text-emerald-400 font-semibold">✓ All transactions categorized</span>`;
   if (pendingCount > 0) {
@@ -790,8 +994,8 @@ function renderTransactionsView() {
       </div>
 
       <!-- Smart Filter Toolbar -->
-      <div class="glass-panel p-4">
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 items-end">
+      <div class="glass-panel p-4 space-y-3 relative z-30">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
           <!-- Account Filter -->
           <div>
             <label class="block text-[11px] font-medium text-slate-400 mb-1">Account</label>
@@ -810,6 +1014,48 @@ function renderTransactionsView() {
               <option value="INCOME" ${txFilterCategoryType === 'INCOME' ? 'selected' : ''}>Income</option>
               <option value="TRANSFER" ${txFilterCategoryType === 'TRANSFER' ? 'selected' : ''}>Transfer</option>
             </select>
+          </div>
+
+          <!-- Category Subfilter (Multi-Select) -->
+          <div class="relative">
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">
+              Category Subfilter (${availableCategories.length})
+            </label>
+            <button id="btn-toggle-cat-dropdown" type="button" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500 flex items-center justify-between">
+              <span class="truncate">
+                ${txFilterCategoryIDs.length === 0
+                  ? 'All Categories'
+                  : `${txFilterCategoryIDs.length} Selected`}
+              </span>
+              <span class="text-[10px] text-slate-400 ml-1">${isCatDropdownOpen ? '▲' : '▼'}</span>
+            </button>
+
+            <!-- Dropdown Panel -->
+            <div id="tx-cat-dropdown-panel" class="${isCatDropdownOpen ? '' : 'hidden'} absolute top-full left-0 mt-1 z-50 w-72 max-w-[90vw] bg-slate-900 border border-slate-700 rounded-lg shadow-2xl p-2.5 space-y-1.5 max-h-72 overflow-y-auto" style="z-index: 9999;">
+              <div class="flex items-center justify-between px-1 border-b border-slate-800 pb-1.5">
+                <span class="text-[10px] font-bold text-slate-400 uppercase">
+                  ${txFilterCategoryType ? `${txFilterCategoryType}` : 'All'} Categories
+                </span>
+                <div class="flex items-center gap-2 text-[10px]">
+                  <button id="btn-select-all-cats" type="button" class="text-brand-400 hover:underline">Select All</button>
+                  <button id="btn-clear-all-cats" type="button" class="text-slate-400 hover:underline">Clear</button>
+                </div>
+              </div>
+
+              ${availableCategories.length === 0 ? `
+                <p class="text-xs text-slate-500 p-2 text-center">No categories found.</p>
+              ` : availableCategories.map(c => {
+                const isChecked = txFilterCategoryIDs.includes(c.id);
+                return `
+                  <label class="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800/60 cursor-pointer text-xs select-none ${c.id === 'UNCATEGORIZED' ? 'bg-amber-500/10 border-b border-slate-800 mb-1' : ''}">
+                    <input type="checkbox" class="chk-category-filter rounded border-slate-700 text-brand-500 focus:ring-0" data-cat-id="${c.id}" ${isChecked ? 'checked' : ''} />
+                    <span class="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0" style="background:${c.color_hex}"></span>
+                    <span class="text-slate-200 font-medium truncate">${c.id === 'UNCATEGORIZED' ? '⚠️ Uncategorized' : c.name_en}</span>
+                    ${c.name_he ? `<span class="text-slate-400 text-[11px] truncate">(${c.name_he})</span>` : ''}
+                  </label>
+                `;
+              }).join('')}
+            </div>
           </div>
 
           <!-- Date Range: From -->
@@ -835,6 +1081,34 @@ function renderTransactionsView() {
             ` : ''}
           </div>
         </div>
+
+        ${txFilterCategoryIDs.length > 0 ? `
+          <div class="flex flex-wrap items-center gap-1.5 pt-3 border-t border-slate-800/80">
+            <span class="text-[11px] text-slate-400 font-medium mr-1">Active Category Filters (${txFilterCategoryIDs.length}):</span>
+            ${txFilterCategoryIDs.map(id => {
+              if (id === 'UNCATEGORIZED') {
+                return `
+                  <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 text-xs border border-amber-500/30 shadow-sm">
+                    <span class="w-2 h-2 rounded-full inline-block bg-amber-400"></span>
+                    <span>⚠️ Uncategorized (ללא קטגוריה)</span>
+                    <button type="button" class="btn-remove-cat-filter text-amber-400 hover:text-rose-400 font-bold ml-1 transition" data-cat-id="UNCATEGORIZED">✕</button>
+                  </span>
+                `;
+              }
+              const cat = categoriesList.find(c => c.id === id);
+              const name = cat ? `${cat.name_en} ${cat.name_he ? `(${cat.name_he})` : ''}` : id;
+              const color = cat ? cat.color_hex : '#3B82F6';
+              return `
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 text-slate-200 text-xs border border-slate-700 shadow-sm">
+                  <span class="w-2 h-2 rounded-full inline-block" style="background:${color}"></span>
+                  <span>${name}</span>
+                  <button type="button" class="btn-remove-cat-filter text-slate-400 hover:text-rose-400 font-bold ml-1 transition" data-cat-id="${id}">✕</button>
+                </span>
+              `;
+            }).join('')}
+            <button id="btn-clear-cat-pills" type="button" class="text-[11px] text-rose-400 hover:underline ml-2">Clear Categories</button>
+          </div>
+        ` : ''}
       </div>
 
       <div class="glass-panel p-6">
@@ -994,6 +1268,292 @@ function renderCategoriesView() {
         ${renderCatGroup('Income Categories', incomeCategories)}
         ${renderCatGroup('Other Categories', otherCategories)}
       `}
+    </div>
+  `;
+}
+
+// ---- Auto-Categorization View ----
+
+function renderAutoCategorizationView() {
+  const isRunning = categorizationStatus.running;
+  const isCanceled = categorizationStatus.canceled;
+  const total = categorizationStatus.total;
+  const processed = categorizationStatus.processed;
+  const currentBatch = categorizationStatus.current_batch;
+  const totalBatches = categorizationStatus.total_batches;
+  const batches = categorizationStatus.batches || [];
+  const pendingBatchesCount = batches.filter(b => b.status === 'pending').length;
+
+  const uncategorizedCount = transactionsList.filter(t => !t.category_id && !t.suggested_category_en).length;
+  const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+
+  return `
+    <div class="space-y-8">
+      <!-- Header Banner -->
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 glass-panel p-6">
+        <div>
+          <h2 class="text-2xl font-extrabold text-white flex items-center gap-2">
+            <span>✨ Auto-Categorization</span>
+            ${isRunning ? `<span class="text-xs px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">● Running</span>` : ''}
+          </h2>
+          <p class="text-xs text-slate-400 mt-1">
+            Automated transaction categorization using AI LLM micro-batches.
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="text-right text-xs">
+            <span class="text-slate-400 block">Waiting in DB</span>
+            <span class="text-white font-bold font-mono text-sm">${uncategorizedCount} transactions</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Layout Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        <!-- Left Column: Status & Run Controls (2 cols on LG) -->
+        <div class="lg:col-span-2 space-y-6">
+
+          <!-- RUN STATUS CARD -->
+          <div class="glass-panel p-6 space-y-6 ${!isRunning ? 'bg-slate-900/40 border-slate-800/60' : 'border-brand-500/30'}">
+            
+            ${isRunning ? `
+              <!-- RUNNING STATE -->
+              <div class="space-y-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3 class="text-base font-bold text-white flex items-center gap-2">
+                      <span class="w-3 h-3 rounded-full bg-emerald-500 animate-ping inline-block"></span>
+                      Categorization Run Active
+                    </h3>
+                    <p class="text-xs text-slate-400 mt-0.5">
+                      Batch ${currentBatch} of ${totalBatches} in progress (${pendingBatchesCount} pending)
+                    </p>
+                  </div>
+                  <button id="btn-cancel-autocat" class="bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-bold px-4 py-2 rounded-lg shadow transition flex items-center gap-1.5">
+                    <span>⛔ Cancel Categorization Run</span>
+                  </button>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="space-y-1.5">
+                  <div class="flex justify-between text-xs font-medium">
+                    <span class="text-slate-300">Overall Progress: ${processed} / ${total} transactions</span>
+                    <span class="text-brand-400 font-bold font-mono">${pct}%</span>
+                  </div>
+                  <div class="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
+                    <div class="h-full bg-gradient-to-r from-purple-500 to-indigo-500 rounded-full transition-all duration-500" style="width: ${pct}%"></div>
+                  </div>
+                </div>
+              </div>
+            ` : `
+              <!-- IDLE / NOT RUNNING STATE (GREYED OUT STATUS) -->
+              <div class="space-y-6">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-xl bg-slate-900/80 border border-slate-800">
+                  <div>
+                    <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                      <span>🚀 Ready to Run Auto-Categorization</span>
+                    </h3>
+                    <p class="text-xs text-slate-400 mt-1">
+                      ${uncategorizedCount > 0 
+                        ? `${uncategorizedCount} transactions ready for AI categorization.`
+                        : 'All transactions have been categorized and reviewed.'}
+                    </p>
+                  </div>
+                  <button id="btn-start-autocat" class="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold px-6 py-3 rounded-xl shadow-lg shadow-purple-500/25 transition flex items-center justify-center gap-2 flex-shrink-0">
+                    <span>✨ Run Categorization</span>
+                  </button>
+                </div>
+
+                ${isCanceled ? `
+                  <div class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
+                    <span>⚠️ Previous categorization run was canceled by user (${processed}/${total} processed).</span>
+                  </div>
+                ` : ''}
+
+                ${categorizationStatus.last_error ? `
+                  <div class="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
+                    ❌ ${categorizationStatus.last_error}
+                  </div>
+                ` : ''}
+              </div>
+            `}
+
+            <!-- BATCHES STATUS LIST & RESULTS BUTTONS -->
+            <div class="space-y-3 pt-4 border-t border-slate-800/80 ${!isRunning ? 'opacity-75' : ''}">
+              <div class="flex items-center justify-between">
+                <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                  Batches Status (${batches.length} Micro-Batches)
+                </h4>
+                <span class="text-[11px] text-slate-500">${pendingBatchesCount} pending &bull; ${batches.filter(b => b.status === 'completed').length} completed</span>
+              </div>
+
+              ${batches.length === 0 ? `
+                <p class="text-xs text-slate-500 py-4 text-center">No active or previous batch run history.</p>
+              ` : `
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-1">
+                  ${batches.map(b => {
+                    let badgeClass = 'bg-slate-800 text-slate-400 border-slate-700';
+                    let statusLabel = 'Pending';
+                    if (b.status === 'running') {
+                      badgeClass = 'bg-blue-500/20 text-blue-300 border-blue-500/30 animate-pulse';
+                      statusLabel = '⚡ Running';
+                    } else if (b.status === 'completed') {
+                      badgeClass = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
+                      statusLabel = '✓ Completed';
+                    } else if (b.status === 'failed' || b.status === 'skipped') {
+                      badgeClass = 'bg-rose-500/20 text-rose-300 border-rose-500/30';
+                      statusLabel = `✕ ${b.status}`;
+                    } else if (b.status === 'canceled') {
+                      badgeClass = 'bg-amber-500/20 text-amber-300 border-amber-500/30';
+                      statusLabel = '⛔ Canceled';
+                    }
+
+                    return `
+                      <div class="p-3 rounded-lg bg-slate-950/60 border border-slate-800 flex items-center justify-between">
+                        <div>
+                          <div class="flex items-center gap-2">
+                            <span class="text-xs font-bold text-white">Batch #${b.index}</span>
+                            <span class="text-[10px] px-2 py-0.5 rounded-full border ${badgeClass}">
+                              ${statusLabel}
+                            </span>
+                          </div>
+                          <span class="text-[11px] text-slate-400 mt-0.5 block">${b.tx_count} transactions</span>
+                        </div>
+                        ${b.status === 'completed' && b.results && b.results.length > 0 ? `
+                          <button class="btn-view-batch-results text-[11px] px-2.5 py-1 rounded bg-brand-600/80 hover:bg-brand-500 text-white font-medium transition" data-batch-idx="${b.index - 1}">
+                            🔍 View Results
+                          </button>
+                        ` : ''}
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              `}
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Right Column: System Prompt & Parameters -->
+        <div class="space-y-6">
+          
+          <!-- SYSTEM PROMPT EDITOR CARD -->
+          <div class="glass-panel p-6 space-y-4">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-white">System Prompt Parameters</h3>
+              <button id="btn-reset-prompt" class="text-[11px] text-slate-400 hover:text-amber-300 transition underline">
+                🔄 Reset to Default
+              </button>
+            </div>
+            <p class="text-xs text-slate-400">
+              Customize the instructions delivered to the AI for transaction matching and category generation.
+            </p>
+
+            <textarea id="autocat-prompt-input" rows="12" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 font-mono focus:outline-none focus:border-brand-500 leading-relaxed">${autoCatPrompt}</textarea>
+
+            <button id="btn-save-prompt" class="w-full bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold py-2.5 rounded-lg shadow transition">
+              💾 Save Prompt Parameters
+            </button>
+          </div>
+
+          <!-- CONNECTION PREVIEW CARD -->
+          <div class="glass-panel p-6 space-y-3">
+            <h3 class="text-sm font-bold text-white">LLM Provider Config</h3>
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between py-1 border-b border-slate-800">
+                <span class="text-slate-400">Endpoint URL</span>
+                <span class="text-slate-200 font-mono truncate max-w-[180px]">${settingsData['localai_url'] || 'http://localhost:8080'}</span>
+              </div>
+              <div class="flex justify-between py-1 border-b border-slate-800">
+                <span class="text-slate-400">Model Name</span>
+                <span class="text-slate-200 font-mono">${settingsData['localai_model'] || 'llama-3-8b'}</span>
+              </div>
+            </div>
+            <button id="btn-nav-settings" class="w-full text-center text-xs text-brand-400 hover:text-brand-300 font-medium py-1 transition">
+              ⚙️ Change LLM Settings in Settings Tab →
+            </button>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+  `;
+}
+
+function renderBatchResultsModal() {
+  if (!selectedBatchResults) return '';
+  return `
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
+      <div class="glass-panel max-w-3xl w-full p-6 space-y-4 max-h-[85vh] overflow-y-auto border border-slate-700 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h3 class="text-base font-bold text-white flex items-center gap-2">
+            <span>🔍 Batch #${selectedBatchResults.index} Results</span>
+            <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-normal">
+              ${selectedBatchResults.tx_count} Transactions
+            </span>
+          </h3>
+          <button id="btn-close-batch-modal" class="text-slate-400 hover:text-white text-lg font-bold px-2 py-0.5 rounded hover:bg-slate-800 transition">✕</button>
+        </div>
+
+        <div class="space-y-3">
+          ${(selectedBatchResults.results || []).map(r => {
+            const tx = transactionsList.find(t => t.id === r.transaction_id);
+            const payee = r.payee_raw || (tx ? tx.payee_raw : 'Transaction Item');
+            const amt = r.amount !== undefined ? r.amount : (tx ? tx.amount : 0);
+            const date = r.date || (tx ? tx.date : '');
+
+            let catDisplay = '';
+            if (r.category_name_en || r.category_name_he) {
+              const catObj = categoriesList.find(c => c.id === r.category_id);
+              const color = catObj ? catObj.color_hex : '#3B82F6';
+              catDisplay = `
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-brand-500/20 text-brand-300 font-semibold border border-brand-500/30">
+                  <span class="w-2 h-2 rounded-full inline-block" style="background:${color}"></span>
+                  ${r.category_name_en || r.category_name_he} ${r.category_name_he && r.category_name_en ? `(${r.category_name_he})` : ''}
+                </span>
+              `;
+            } else if (r.category_id) {
+              const catObj = categoriesList.find(c => c.id === r.category_id);
+              if (catObj) {
+                catDisplay = `
+                  <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-brand-500/20 text-brand-300 font-semibold border border-brand-500/30">
+                    <span class="w-2 h-2 rounded-full inline-block" style="background:${catObj.color_hex}"></span>
+                    ${catObj.name_en} ${catObj.name_he ? `(${catObj.name_he})` : ''}
+                  </span>
+                `;
+              } else {
+                catDisplay = `<span class="px-2.5 py-1 rounded-md bg-brand-500/20 text-brand-300 font-semibold border border-brand-500/30">${r.category_id}</span>`;
+              }
+            } else if (r.suggested_category) {
+              catDisplay = `
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 font-semibold border border-amber-500/30">
+                  Suggested: ${r.suggested_category.name_en || r.suggested_category.name_he} ${r.suggested_category.name_he && r.suggested_category.name_en ? `(${r.suggested_category.name_he})` : ''} [${r.suggested_category.category_type}]
+                </span>
+              `;
+            } else {
+              catDisplay = `<span class="text-slate-500">Uncategorized</span>`;
+            }
+
+            return `
+              <div class="p-3.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2 text-xs">
+                <div class="flex justify-between items-center font-medium">
+                  <span class="text-white font-bold text-sm">${payee}</span>
+                  <span class="text-slate-300 font-mono text-xs">${formatMoney(amt)} &bull; ${date}</span>
+                </div>
+                <div class="flex justify-between items-center text-xs pt-2 border-t border-slate-800/60">
+                  <div class="flex items-center gap-2">
+                    <span class="text-slate-400 font-medium">Chosen Category:</span>
+                    ${catDisplay}
+                  </div>
+                  ${r.confidence ? `<span class="text-slate-400 text-[11px]">Confidence: ${(r.confidence * 100).toFixed(0)}%</span>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
     </div>
   `;
 }
@@ -2020,72 +2580,148 @@ function attachEvents() {
     }
   });
 
-  // ---- LocalAI Batch ----
-  let localAIPollTimer: any = null;
+  // ---- Auto-Categorization Event Handlers & Status Polling ----
 
-  const checkLocalAIStatus = async () => {
-    const btn = document.getElementById('btn-trigger-ai');
+  const checkAutoCatStatus = async () => {
     try {
-      const res = await fetch('/api/v1/categorize/localai/status');
+      const res = await fetch('/api/v1/categorize/status');
       if (!res.ok) return;
-      const status = await res.json();
+      const status: CategorizationStatus = await res.json();
+      const wasRunning = categorizationStatus.running;
+      categorizationStatus = status;
 
       if (status.running) {
-        if (btn) {
-          btn.innerHTML = `⏳ Categorizing (${status.processed}/${status.total})...`;
-          (btn as HTMLButtonElement).disabled = true;
+        if (activeTab === 'autocat') {
+          renderApp();
         }
       } else {
-        if (localAIPollTimer) {
-          clearInterval(localAIPollTimer);
-          localAIPollTimer = null;
+        if (autoCatPollTimer) {
+          clearInterval(autoCatPollTimer);
+          autoCatPollTimer = null;
         }
-        if (btn) {
-          btn.innerHTML = '✨ Run LocalAI';
-          (btn as HTMLButtonElement).disabled = false;
+        if (wasRunning) {
+          if (status.canceled) {
+            showToast('Categorization run canceled by user', 'info');
+          } else if (status.last_error) {
+            showToast(`Categorization run stopped: ${status.last_error}`, 'error');
+          } else if (status.total > 0) {
+            showToast(`Finished categorizing ${status.processed} transactions!`, 'success');
+          }
+          await loadData();
+          renderApp();
         }
-        if (status.last_error) {
-          showToast(`LocalAI Stopped: ${status.last_error}`, 'error');
-        } else if (status.total > 0) {
-          showToast(`LocalAI: Finished categorizing ${status.processed} transactions!`, 'success');
-        }
-        await loadData();
-        renderApp();
       }
     } catch {
       // Ignore polling errors
     }
   };
 
-  document.getElementById('btn-trigger-ai')?.addEventListener('click', async () => {
-    const btn = document.getElementById('btn-trigger-ai')!;
-    btn.innerHTML = '⏳ Starting...';
-    (btn as HTMLButtonElement).disabled = true;
+  // Header Nav Button for Auto-Categorization
+  document.getElementById('btn-trigger-ai')?.addEventListener('click', () => {
+    activeTab = 'autocat';
+    renderApp();
+  });
 
+  // Start Categorization
+  document.getElementById('btn-start-autocat')?.addEventListener('click', async () => {
     try {
-      const res = await fetch('/api/v1/categorize/localai', { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
+      const res = await fetch('/api/v1/categorize/start', { method: 'POST' });
+      const status: CategorizationStatus = await res.json().catch(() => ({}));
       if (res.ok || res.status === 202) {
-        if (data.total === 0) {
+        categorizationStatus = status;
+        if (status.total === 0) {
           showToast('No uncategorized transactions to process', 'info');
-          btn.innerHTML = '✨ Run LocalAI';
-          (btn as HTMLButtonElement).disabled = false;
-          return;
+        } else {
+          showToast(`Auto-categorization started (${status.total} transactions across ${status.total_batches} batches)`, 'info');
+          if (!autoCatPollTimer) {
+            autoCatPollTimer = setInterval(checkAutoCatStatus, 2000);
+          }
         }
-        showToast(`LocalAI worker started (${data.total} transactions)`, 'info');
-        if (!localAIPollTimer) {
-          localAIPollTimer = setInterval(checkLocalAIStatus, 2000);
-        }
+        renderApp();
       } else {
-        showToast(`LocalAI Error: ${data.error || res.statusText}`, 'error');
-        btn.innerHTML = '✨ Run LocalAI';
-        (btn as HTMLButtonElement).disabled = false;
+        showToast(`Failed to start categorization: ${(status as any).error || res.statusText}`, 'error');
       }
     } catch (err: any) {
-      showToast(`Error triggering LocalAI: ${err.message || err}`, 'error');
-      btn.innerHTML = '✨ Run LocalAI';
-      (btn as HTMLButtonElement).disabled = false;
+      showToast(`Error starting categorization: ${err.message || err}`, 'error');
     }
+  });
+
+  // Cancel Categorization
+  document.getElementById('btn-cancel-autocat')?.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/v1/categorize/cancel', { method: 'POST' });
+      if (res.ok) {
+        categorizationStatus = await res.json();
+        showToast('Categorization run cancel signal sent', 'info');
+        renderApp();
+      }
+    } catch (err: any) {
+      showToast(`Error canceling categorization: ${err.message || err}`, 'error');
+    }
+  });
+
+  // Save System Prompt
+  document.getElementById('btn-save-prompt')?.addEventListener('click', async () => {
+    const input = document.getElementById('autocat-prompt-input') as HTMLTextAreaElement;
+    if (!input) return;
+    const promptVal = input.value;
+    try {
+      const res = await fetch('/api/v1/categorize/prompt', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: promptVal }),
+      });
+      if (res.ok) {
+        autoCatPrompt = promptVal;
+        showToast('System prompt parameters saved', 'success');
+      } else {
+        showToast('Failed to save prompt parameters', 'error');
+      }
+    } catch {
+      showToast('Error saving prompt parameters', 'error');
+    }
+  });
+
+  // Reset System Prompt to Default
+  document.getElementById('btn-reset-prompt')?.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/v1/categorize/prompt/reset', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        autoCatPrompt = data.prompt || autoCatDefaultPrompt;
+        const input = document.getElementById('autocat-prompt-input') as HTMLTextAreaElement;
+        if (input) input.value = autoCatPrompt;
+        showToast('System prompt reset to default', 'info');
+      }
+    } catch {
+      showToast('Error resetting prompt', 'error');
+    }
+  });
+
+  // View Batch Results Modal
+  document.querySelectorAll('.btn-view-batch-results').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const idxStr = (e.currentTarget as HTMLElement).getAttribute('data-batch-idx');
+      if (idxStr !== null && categorizationStatus.batches) {
+        const idx = parseInt(idxStr, 10);
+        if (idx >= 0 && idx < categorizationStatus.batches.length) {
+          selectedBatchResults = categorizationStatus.batches[idx];
+          renderApp();
+        }
+      }
+    });
+  });
+
+  // Close Batch Results Modal
+  document.getElementById('btn-close-batch-modal')?.addEventListener('click', () => {
+    selectedBatchResults = null;
+    renderApp();
+  });
+
+  // Nav to Settings from LLM Config Card
+  document.getElementById('btn-nav-settings')?.addEventListener('click', () => {
+    activeTab = 'settings';
+    renderApp();
   });
 
   // ---- AI Suggestion Buttons ----
@@ -2161,6 +2797,43 @@ function attachEvents() {
     await loadData();
     renderApp();
   });
+  const handleCashFlowDateChange = async () => {
+    const fromInput = document.getElementById('widget-cashflow-from') as HTMLInputElement;
+    const toInput = document.getElementById('widget-cashflow-to') as HTMLInputElement;
+    if (!fromInput || !toInput) return;
+    const newFrom = fromInput.value;
+    const newTo = toInput.value;
+    if (newFrom && newTo && (newFrom !== widgetFilters.cashflowFromMonth || newTo !== widgetFilters.cashflowToMonth)) {
+      widgetFilters.cashflowFromMonth = newFrom;
+      widgetFilters.cashflowToMonth = newTo;
+      await loadData();
+      renderApp();
+    }
+  };
+
+  document.getElementById('widget-cashflow-from')?.addEventListener('change', handleCashFlowDateChange);
+  document.getElementById('widget-cashflow-from')?.addEventListener('input', handleCashFlowDateChange);
+  document.getElementById('widget-cashflow-to')?.addEventListener('change', handleCashFlowDateChange);
+  document.getElementById('widget-cashflow-to')?.addEventListener('input', handleCashFlowDateChange);
+
+  const setCashFlowPreset = async (monthsCount: number) => {
+    const now = new Date();
+    const toYear = now.getFullYear();
+    const toMonth = String(now.getMonth() + 1).padStart(2, '0');
+    widgetFilters.cashflowToMonth = `${toYear}-${toMonth}`;
+
+    const fromDate = new Date(now.getFullYear(), now.getMonth() - (monthsCount - 1), 1);
+    const fromYear = fromDate.getFullYear();
+    const fromMonth = String(fromDate.getMonth() + 1).padStart(2, '0');
+    widgetFilters.cashflowFromMonth = `${fromYear}-${fromMonth}`;
+
+    await loadData();
+    renderApp();
+  };
+
+  document.getElementById('btn-cashflow-preset-3m')?.addEventListener('click', () => setCashFlowPreset(3));
+  document.getElementById('btn-cashflow-preset-6m')?.addEventListener('click', () => setCashFlowPreset(6));
+  document.getElementById('btn-cashflow-preset-12m')?.addEventListener('click', () => setCashFlowPreset(12));
   document.getElementById('widget-acc-donut')?.addEventListener('change', async (e) => {
     widgetFilters.donutAcc = (e.target as HTMLSelectElement).value;
     await loadData();
@@ -2186,6 +2859,43 @@ function attachEvents() {
     await loadData();
     renderApp();
   });
+  const handleMoMDateChange = async () => {
+    const fromInput = document.getElementById('widget-mom-from') as HTMLInputElement;
+    const toInput = document.getElementById('widget-mom-to') as HTMLInputElement;
+    if (!fromInput || !toInput) return;
+    const newFrom = fromInput.value;
+    const newTo = toInput.value;
+    if (newFrom && newTo && (newFrom !== widgetFilters.momFromMonth || newTo !== widgetFilters.momToMonth)) {
+      widgetFilters.momFromMonth = newFrom;
+      widgetFilters.momToMonth = newTo;
+      await loadData();
+      renderApp();
+    }
+  };
+
+  document.getElementById('widget-mom-from')?.addEventListener('change', handleMoMDateChange);
+  document.getElementById('widget-mom-from')?.addEventListener('input', handleMoMDateChange);
+  document.getElementById('widget-mom-to')?.addEventListener('change', handleMoMDateChange);
+  document.getElementById('widget-mom-to')?.addEventListener('input', handleMoMDateChange);
+
+  const setMoMPreset = async (monthsCount: number) => {
+    const now = new Date();
+    const toYear = now.getFullYear();
+    const toMonth = String(now.getMonth() + 1).padStart(2, '0');
+    widgetFilters.momToMonth = `${toYear}-${toMonth}`;
+
+    const fromDate = new Date(now.getFullYear(), now.getMonth() - (monthsCount - 1), 1);
+    const fromYear = fromDate.getFullYear();
+    const fromMonth = String(fromDate.getMonth() + 1).padStart(2, '0');
+    widgetFilters.momFromMonth = `${fromYear}-${fromMonth}`;
+
+    await loadData();
+    renderApp();
+  };
+
+  document.getElementById('btn-mom-preset-3m')?.addEventListener('click', () => setMoMPreset(3));
+  document.getElementById('btn-mom-preset-6m')?.addEventListener('click', () => setMoMPreset(6));
+  document.getElementById('btn-mom-preset-12m')?.addEventListener('click', () => setMoMPreset(12));
 
   // ---- Transaction Filters & Pagination ----
   document.getElementById('tx-filter-account')?.addEventListener('change', async (e) => {
@@ -2197,6 +2907,79 @@ function attachEvents() {
 
   document.getElementById('tx-filter-type')?.addEventListener('change', async (e) => {
     txFilterCategoryType = (e.target as HTMLSelectElement).value;
+    if (txFilterCategoryType) {
+      const validIDs = new Set(categoriesList.filter(c => c.category_type === txFilterCategoryType).map(c => c.id));
+      txFilterCategoryIDs = txFilterCategoryIDs.filter(id => validIDs.has(id));
+    }
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  // Toggle Category Subfilter Dropdown
+  document.getElementById('btn-toggle-cat-dropdown')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    isCatDropdownOpen = !isCatDropdownOpen;
+    renderApp();
+  });
+
+  // Select All Categories
+  document.getElementById('btn-select-all-cats')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const availableCategories = txFilterCategoryType
+      ? categoriesList.filter(c => c.category_type === txFilterCategoryType)
+      : categoriesList;
+    txFilterCategoryIDs = availableCategories.map(c => c.id);
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  // Clear All Categories Selection
+  document.getElementById('btn-clear-all-cats')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    txFilterCategoryIDs = [];
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  // Individual Checkbox Toggle
+  document.querySelectorAll('.chk-category-filter').forEach(chk => {
+    chk.addEventListener('change', async (e) => {
+      e.stopPropagation();
+      const cb = e.currentTarget as HTMLInputElement;
+      const catId = cb.getAttribute('data-cat-id');
+      if (!catId) return;
+      if (cb.checked) {
+        if (!txFilterCategoryIDs.includes(catId)) {
+          txFilterCategoryIDs.push(catId);
+        }
+      } else {
+        txFilterCategoryIDs = txFilterCategoryIDs.filter(id => id !== catId);
+      }
+      txPage = 0;
+      await loadTransactions();
+      renderApp();
+    });
+  });
+
+  // Remove Category Pill
+  document.querySelectorAll('.btn-remove-cat-filter').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const catId = (e.currentTarget as HTMLElement).getAttribute('data-cat-id');
+      if (catId) {
+        txFilterCategoryIDs = txFilterCategoryIDs.filter(id => id !== catId);
+        txPage = 0;
+        await loadTransactions();
+        renderApp();
+      }
+    });
+  });
+
+  // Clear Category Pills
+  document.getElementById('btn-clear-cat-pills')?.addEventListener('click', async () => {
+    txFilterCategoryIDs = [];
     txPage = 0;
     await loadTransactions();
     renderApp();
@@ -2226,9 +3009,11 @@ function attachEvents() {
   document.getElementById('btn-tx-clear-filters')?.addEventListener('click', async () => {
     txFilterAccountID = '';
     txFilterCategoryType = '';
+    txFilterCategoryIDs = [];
     txFilterStartDate = '';
     txFilterEndDate = '';
     txFilterSearch = '';
+    isCatDropdownOpen = false;
     txPage = 0;
     await loadTransactions();
     renderApp();
@@ -2254,6 +3039,18 @@ function attachEvents() {
       txPage++;
       await loadTransactions();
       renderApp();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    const dropdown = document.getElementById('tx-cat-dropdown-panel');
+    const toggleBtn = document.getElementById('btn-toggle-cat-dropdown');
+    if (isCatDropdownOpen && dropdown && toggleBtn) {
+      const target = e.target as Node;
+      if (!dropdown.contains(target) && !toggleBtn.contains(target)) {
+        isCatDropdownOpen = false;
+        renderApp();
+      }
     }
   });
 }

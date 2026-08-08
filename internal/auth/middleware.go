@@ -22,10 +22,18 @@ func AuthMiddleware(cfg *config.Config) echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			path := c.Path()
 
-			// Bypass auth check for login, callback, and logout endpoints
-			if path == "/auth/login" || path == "/auth/callback" || path == "/auth/logout" ||
-				path == "/api/v1/auth/login" || path == "/api/v1/auth/callback" || path == "/api/v1/auth/info" {
-				return next(c)
+			// 1. Check session cookie and inject user context if valid
+			cookie, err := c.Cookie("finrep_session")
+			if err == nil && cookie.Value != "" {
+				sessData := decodeSession(cookie.Value)
+				if sessData != nil {
+					user := &UserContext{
+						ID:    sessData.ID,
+						Name:  sessData.Name,
+						Email: sessData.Email,
+					}
+					c.Set(UserContextKey, user)
+				}
 			}
 
 			// Dev Mode Bypass
@@ -39,30 +47,27 @@ func AuthMiddleware(cfg *config.Config) echo.MiddlewareFunc {
 				return next(c)
 			}
 
-			// Check session cookie
-			cookie, err := c.Cookie("finrep_session")
-			if err == nil && cookie.Value != "" {
-				sessData := decodeSession(cookie.Value)
-				if sessData != nil {
-					user := &UserContext{
-						ID:    sessData.ID,
-						Name:  sessData.Name,
-						Email: sessData.Email,
-					}
-					c.Set(UserContextKey, user)
-					return next(c)
-				}
+			// 2. Bypass auth enforcement for auth endpoints and static routes
+			if path == "/auth/login" || path == "/auth/callback" || path == "/auth/logout" ||
+				path == "/api/v1/auth/login" || path == "/api/v1/auth/callback" || path == "/api/v1/auth/info" ||
+				path == "/login" {
+				return next(c)
 			}
 
-			// Unauthenticated request
+			// 3. If user is authenticated, proceed
+			if c.Get(UserContextKey) != nil {
+				return next(c)
+			}
+
+			// 4. Unauthenticated request
 			if strings.HasPrefix(path, "/api") {
 				return c.JSON(http.StatusUnauthorized, map[string]string{
 					"error": "Authentication required. Please log in via OIDC.",
 				})
 			}
 
-			// For browser page navigation, redirect to OIDC login
-			return c.Redirect(http.StatusFound, "/auth/login")
+			// For browser page navigation, redirect to /login page
+			return c.Redirect(http.StatusFound, "/login")
 		}
 	}
 }

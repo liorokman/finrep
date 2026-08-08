@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/liorokman/finrep/internal/auth"
@@ -39,7 +40,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	// Root OIDC Auth endpoints for browser redirects
 	e.GET("/auth/login", auth.HandleLogin(h.cfg))
 	e.GET("/auth/callback", auth.HandleCallback(h.cfg))
-	e.GET("/auth/logout", auth.HandleLogout())
+	e.GET("/auth/logout", auth.HandleLogout(h.cfg))
 
 	api := e.Group("/api/v1")
 
@@ -47,7 +48,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.GET("/auth/info", h.GetAuthInfo)
 	api.GET("/auth/login", auth.HandleLogin(h.cfg))
 	api.GET("/auth/callback", auth.HandleCallback(h.cfg))
-	api.GET("/auth/logout", auth.HandleLogout())
+	api.GET("/auth/logout", auth.HandleLogout(h.cfg))
 
 	// Accounts
 	api.GET("/accounts", h.GetAccounts)
@@ -67,11 +68,15 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.PUT("/transactions/:id/category", h.UpdateTransactionCategory)
 	api.DELETE("/transactions/:id", h.DeleteTransaction)
 
-	// CSV Import & LocalAI
-	api.POST("/import", h.ImportCSV)
-	api.POST("/import/inspect", h.InspectCSV)
-	api.POST("/import/stage", h.StageCSV)
-	api.POST("/import/commit", h.CommitCSV)
+	// Auto-Categorization
+	api.POST("/categorize/start", h.CategorizeLocalAI)
+	api.POST("/categorize/cancel", h.CancelCategorization)
+	api.GET("/categorize/status", h.GetLocalAIStatus)
+	api.GET("/categorize/prompt", h.GetCategorizationPrompt)
+	api.PUT("/categorize/prompt", h.UpdateCategorizationPrompt)
+	api.POST("/categorize/prompt/reset", h.ResetCategorizationPrompt)
+
+	// LocalAI Backward compatibility aliases
 	api.POST("/categorize/localai", h.CategorizeLocalAI)
 	api.GET("/categorize/localai/status", h.GetLocalAIStatus)
 	api.POST("/categorize/localai/test", h.TestLocalAIConnection)
@@ -220,9 +225,17 @@ func (h *Handler) QueryTransactions(c echo.Context) error {
 		}
 	}
 
+	var categoryIDs []string
+	if c.QueryParam("category_ids") != "" {
+		categoryIDs = strings.Split(c.QueryParam("category_ids"), ",")
+	} else if params := c.QueryParams()["category_ids"]; len(params) > 0 {
+		categoryIDs = params
+	}
+
 	filter := database.TransactionFilter{
 		AccountID:    c.QueryParam("account_id"),
 		CategoryID:   c.QueryParam("category_id"),
+		CategoryIDs:  categoryIDs,
 		CategoryType: c.QueryParam("category_type"),
 		Unreviewed:   unreviewed,
 		Search:       c.QueryParam("search"),
@@ -459,6 +472,42 @@ func (h *Handler) CategorizeLocalAI(c echo.Context) error {
 func (h *Handler) GetLocalAIStatus(c echo.Context) error {
 	status := h.localAI.GetStatus()
 	return c.JSON(http.StatusOK, status)
+}
+
+func (h *Handler) CancelCategorization(c echo.Context) error {
+	status := h.localAI.CancelBackgroundCategorization()
+	return c.JSON(http.StatusOK, status)
+}
+
+func (h *Handler) GetCategorizationPrompt(c echo.Context) error {
+	currentPrompt := h.localAI.GetPrompt()
+	return c.JSON(http.StatusOK, map[string]string{
+		"prompt":         currentPrompt,
+		"default_prompt": localai.SystemPrompt,
+	})
+}
+
+func (h *Handler) UpdateCategorizationPrompt(c echo.Context) error {
+	var body struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+	}
+	if err := h.localAI.SetPrompt(body.Prompt); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (h *Handler) ResetCategorizationPrompt(c echo.Context) error {
+	if err := h.localAI.ResetPrompt(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]string{
+		"status": "reset",
+		"prompt": localai.SystemPrompt,
+	})
 }
 
 func (h *Handler) TestLocalAIConnection(c echo.Context) error {

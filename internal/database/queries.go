@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -152,30 +153,53 @@ func (db *DB) AcceptCategorySuggestion(txID string) (*models.Category, error) {
 		catType = models.CategoryType(*tx.SuggestedCategoryType)
 	}
 
-	newCat := &models.Category{
-		ID:           uuid.New().String(),
-		NameHE:       *tx.SuggestedCategoryHE,
-		NameEN:       *tx.SuggestedCategoryEN,
-		ColorHex:     "#3B82F6",
-		Icon:         "tag",
-		CategoryType: catType,
+	// Check if a category with matching English or Hebrew name already exists
+	var existingCat models.Category
+	findErr := db.QueryRow(`
+		SELECT id, name_he, name_en, parent_id, color_hex, icon, category_type, monthly_budget, created_at
+		FROM categories
+		WHERE LOWER(name_en) = LOWER(?) OR LOWER(name_he) = LOWER(?)
+		LIMIT 1
+	`, *tx.SuggestedCategoryEN, *tx.SuggestedCategoryHE).Scan(
+		&existingCat.ID, &existingCat.NameHE, &existingCat.NameEN, &existingCat.ParentID,
+		&existingCat.ColorHex, &existingCat.Icon, &existingCat.CategoryType,
+		&existingCat.MonthlyBudget, &existingCat.CreatedAt,
+	)
+
+	var targetCatID string
+	var returnCat *models.Category
+
+	if findErr == nil {
+		targetCatID = existingCat.ID
+		returnCat = &existingCat
+	} else {
+		newCat := &models.Category{
+			ID:           uuid.New().String(),
+			NameHE:       *tx.SuggestedCategoryHE,
+			NameEN:       *tx.SuggestedCategoryEN,
+			ColorHex:     "#3B82F6",
+			Icon:         "tag",
+			CategoryType: catType,
+		}
+
+		if err := db.CreateCategory(newCat); err != nil {
+			return nil, fmt.Errorf("failed to create suggested category: %w", err)
+		}
+		targetCatID = newCat.ID
+		returnCat = newCat
 	}
 
-	if err := db.CreateCategory(newCat); err != nil {
-		return nil, fmt.Errorf("failed to create suggested category: %w", err)
-	}
-
-	// Update transaction to link new category & clear suggestion fields
+	// Update transaction to link target category & clear suggestion fields
 	_, err = db.Exec(`
 		UPDATE transactions
 		SET category_id = ?, suggested_category_he = NULL, suggested_category_en = NULL, suggested_category_type = NULL, is_reviewed = 1, categorized_by = 'LOCALAI', updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, newCat.ID, txID)
+	`, targetCatID, txID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update transaction category: %w", err)
 	}
 
-	return newCat, nil
+	return returnCat, nil
 }
 
 func (db *DB) RejectCategorySuggestion(txID string, fallbackCategoryID *string) error {
@@ -254,6 +278,7 @@ func (db *DB) GetDailyOccurrenceOrdinal(accountID, dateStr string, amount float6
 type TransactionFilter struct {
 	AccountID    string
 	CategoryID   string
+	CategoryIDs  []string
 	CategoryType string
 	Unreviewed   *bool
 	Search       string
@@ -291,11 +316,46 @@ func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int,
 		args = append(args, f.AccountID)
 		countArgs = append(countArgs, f.AccountID)
 	}
-	if f.CategoryID != "" {
-		query += " AND t.category_id = ?"
-		countQuery += " AND t.category_id = ?"
-		args = append(args, f.CategoryID)
-		countArgs = append(countArgs, f.CategoryID)
+	if len(f.CategoryIDs) > 0 {
+		var realIDs []string
+		hasUncategorized := false
+		for _, cid := range f.CategoryIDs {
+			if cid == "UNCATEGORIZED" || cid == "uncategorized" || cid == "null" || cid == "" {
+				hasUncategorized = true
+			} else {
+				realIDs = append(realIDs, cid)
+			}
+		}
+
+		var subConditions []string
+		if len(realIDs) > 0 {
+			placeholders := make([]string, len(realIDs))
+			for i, cid := range realIDs {
+				placeholders[i] = "?"
+				args = append(args, cid)
+				countArgs = append(countArgs, cid)
+			}
+			subConditions = append(subConditions, fmt.Sprintf("t.category_id IN (%s)", strings.Join(placeholders, ",")))
+		}
+		if hasUncategorized {
+			subConditions = append(subConditions, "(t.category_id IS NULL OR t.category_id = '')")
+		}
+
+		if len(subConditions) > 0 {
+			clause := fmt.Sprintf(" AND (%s)", strings.Join(subConditions, " OR "))
+			query += clause
+			countQuery += clause
+		}
+	} else if f.CategoryID != "" {
+		if f.CategoryID == "UNCATEGORIZED" || f.CategoryID == "uncategorized" || f.CategoryID == "null" {
+			query += " AND (t.category_id IS NULL OR t.category_id = '')"
+			countQuery += " AND (t.category_id IS NULL OR t.category_id = '')"
+		} else {
+			query += " AND t.category_id = ?"
+			countQuery += " AND t.category_id = ?"
+			args = append(args, f.CategoryID)
+			countArgs = append(countArgs, f.CategoryID)
+		}
 	}
 	if f.CategoryType != "" {
 		query += " AND c.category_type = ?"

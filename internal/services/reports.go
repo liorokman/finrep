@@ -182,12 +182,22 @@ func (s *ReportService) GetCashFlowSummary(accountID, startDate, endDate string)
 		args = append(args, accountID)
 	}
 	if startDate != "" {
-		query += " AND date >= ?"
-		args = append(args, startDate)
+		if len(startDate) == 7 {
+			query += " AND strftime('%Y-%m', date) >= ?"
+			args = append(args, startDate)
+		} else {
+			query += " AND date >= ?"
+			args = append(args, startDate)
+		}
 	}
 	if endDate != "" {
-		query += " AND date <= ?"
-		args = append(args, endDate)
+		if len(endDate) == 7 {
+			query += " AND strftime('%Y-%m', date) <= ?"
+			args = append(args, endDate)
+		} else {
+			query += " AND date <= ?"
+			args = append(args, endDate)
+		}
 	}
 	query += " GROUP BY month ORDER BY month ASC"
 
@@ -407,12 +417,57 @@ func (s *ReportService) GetAnomalies() ([]AnomalyItem, error) {
 	return items, nil
 }
 
-// GetMoMHeatmap returns a category × last-6-months spending matrix
+// GetMoMHeatmap returns a category × months spending matrix for specified month range
 func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]MoMRow, error) {
 	now := time.Now()
+	var startMonth, endMonth time.Time
+	var err error
+
+	// Determine end month (default current month)
+	if endDate != "" {
+		if len(endDate) == 7 { // YYYY-MM
+			endMonth, err = time.Parse("2006-01", endDate)
+		} else if len(endDate) >= 10 { // YYYY-MM-DD
+			endMonth, err = time.Parse("2006-01-02", endDate)
+		}
+	}
+	if err != nil || endMonth.IsZero() {
+		endMonth = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	} else {
+		endMonth = time.Date(endMonth.Year(), endMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
+
+	// Determine start month (default 5 months before endMonth = 6 months total)
+	if startDate != "" {
+		if len(startDate) == 7 { // YYYY-MM
+			startMonth, err = time.Parse("2006-01", startDate)
+		} else if len(startDate) >= 10 { // YYYY-MM-DD
+			startMonth, err = time.Parse("2006-01-02", startDate)
+		}
+	}
+	if err != nil || startMonth.IsZero() {
+		startMonth = endMonth.AddDate(0, -5, 0)
+	} else {
+		startMonth = time.Date(startMonth.Year(), startMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
+
+	// Ensure startMonth <= endMonth
+	if startMonth.After(endMonth) {
+		startMonth, endMonth = endMonth, startMonth
+	}
+
+	// Limit range to max 24 months to avoid extreme UI overhead
 	var months []string
-	for i := 5; i >= 0; i-- {
-		months = append(months, now.AddDate(0, -i, 0).Format("2006-01"))
+	curr := startMonth
+	count := 0
+	for !curr.After(endMonth) && count < 24 {
+		months = append(months, curr.Format("2006-01"))
+		curr = curr.AddDate(0, 1, 0)
+		count++
+	}
+
+	if len(months) == 0 {
+		months = []string{now.Format("2006-01")}
 	}
 
 	query := `
@@ -422,19 +477,10 @@ func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]M
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND strftime('%Y-%m', t.date) >= ?
+		  AND strftime('%Y-%m', t.date) <= ?
 	`
-	var args []interface{}
-	if startDate != "" {
-		query += " AND t.date >= ?"
-		args = append(args, startDate)
-	} else {
-		query += " AND strftime('%Y-%m', t.date) >= ?"
-		args = append(args, months[0])
-	}
-	if endDate != "" {
-		query += " AND t.date <= ?"
-		args = append(args, endDate)
-	}
+	args := []interface{}{months[0], months[len(months)-1]}
 	if accountID != "" {
 		query += " AND t.account_id = ?"
 		args = append(args, accountID)

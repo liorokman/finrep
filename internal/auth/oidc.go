@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -44,6 +46,18 @@ type SessionCookieData struct {
 }
 
 var secretKey = []byte("finrep-session-secret-key-32bytes!")
+
+var (
+	oidcCacheMu        sync.RWMutex
+	oidcEndpointsCache = make(map[string]oidcEndpoints)
+)
+
+type oidcEndpoints struct {
+	authURL       string
+	tokenURL      string
+	userinfoURL   string
+	endSessionURL string
+}
 
 func encodeSession(data *SessionCookieData) string {
 	b, _ := json.Marshal(data)
@@ -80,29 +94,61 @@ func decodeSession(cookieVal string) *SessionCookieData {
 	return &sess
 }
 
-func getOIDCEndpoints(issuer string) (authURL, tokenURL, userinfoURL string) {
-	issuer = strings.TrimSuffix(issuer, "/")
+func getOIDCEndpoints(issuer string) (authURL, tokenURL, userinfoURL, endSessionURL string) {
+	cleanIssuer := strings.TrimSuffix(issuer, "/")
+
+	oidcCacheMu.RLock()
+	if cached, ok := oidcEndpointsCache[cleanIssuer]; ok {
+		oidcCacheMu.RUnlock()
+		return cached.authURL, cached.tokenURL, cached.userinfoURL, cached.endSessionURL
+	}
+	oidcCacheMu.RUnlock()
 
 	// Attempt to fetch .well-known configuration
-	wellKnownURL := issuer + "/.well-known/openid-configuration"
+	wellKnownURL := cleanIssuer + "/.well-known/openid-configuration"
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(wellKnownURL)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		defer resp.Body.Close()
 		var disc struct {
-			AuthEP     string `json:"authorization_endpoint"`
-			TokenEP    string `json:"token_endpoint"`
-			UserinfoEP string `json:"userinfo_endpoint"`
+			AuthEP       string `json:"authorization_endpoint"`
+			TokenEP      string `json:"token_endpoint"`
+			UserinfoEP   string `json:"userinfo_endpoint"`
+			EndSessionEP string `json:"end_session_endpoint"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&disc); err == nil {
 			if disc.AuthEP != "" && disc.TokenEP != "" {
-				return disc.AuthEP, disc.TokenEP, disc.UserinfoEP
+				ep := oidcEndpoints{
+					authURL:       disc.AuthEP,
+					tokenURL:      disc.TokenEP,
+					userinfoURL:   disc.UserinfoEP,
+					endSessionURL: disc.EndSessionEP,
+				}
+				oidcCacheMu.Lock()
+				oidcEndpointsCache[cleanIssuer] = ep
+				oidcCacheMu.Unlock()
+				slog.Info("Discovered OIDC endpoints", "well_known", wellKnownURL, "auth_endpoint", disc.AuthEP)
+				return ep.authURL, ep.tokenURL, ep.userinfoURL, ep.endSessionURL
 			}
 		}
+	} else if err != nil {
+		slog.Warn("Failed to fetch OIDC discovery document", "url", wellKnownURL, "error", err)
 	}
 
 	// Default fallback paths for Authentik / standard OIDC providers
-	return issuer + "/authorize", issuer + "/token", issuer + "/userinfo"
+	fallbackAuth := cleanIssuer + "/authorize"
+	if idx := strings.Index(cleanIssuer, "/application/o/"); idx != -1 {
+		baseURL := cleanIssuer[:idx]
+		fallbackAuth = baseURL + "/application/o/authorize/"
+	}
+
+	ep := oidcEndpoints{
+		authURL:       fallbackAuth,
+		tokenURL:      cleanIssuer + "/token",
+		userinfoURL:   cleanIssuer + "/userinfo",
+		endSessionURL: cleanIssuer + "/end-session/",
+	}
+	return ep.authURL, ep.tokenURL, ep.userinfoURL, ep.endSessionURL
 }
 
 // HandleLogin redirects the user to the OIDC provider's authorization endpoint
@@ -135,7 +181,7 @@ func HandleLogin(cfg *config.Config) echo.HandlerFunc {
 			MaxAge:   300, // 5 mins
 		})
 
-		authEP, _, _ := getOIDCEndpoints(cfg.OIDCIssuer)
+		authEP, _, _, _ := getOIDCEndpoints(cfg.OIDCIssuer)
 
 		u, err := url.Parse(authEP)
 		if err != nil {
@@ -201,7 +247,7 @@ func HandleCallback(cfg *config.Config) echo.HandlerFunc {
 			MaxAge:   -1,
 		})
 
-		_, tokenEP, userinfoEP := getOIDCEndpoints(cfg.OIDCIssuer)
+		_, tokenEP, userinfoEP, _ := getOIDCEndpoints(cfg.OIDCIssuer)
 
 		// Exchange code for tokens
 		form := url.Values{}
@@ -280,8 +326,8 @@ func HandleCallback(cfg *config.Config) echo.HandlerFunc {
 	}
 }
 
-// HandleLogout clears the session cookie and redirects to /
-func HandleLogout() echo.HandlerFunc {
+// HandleLogout clears local session cookie and redirects to OIDC provider's end_session_endpoint
+func HandleLogout(cfg *config.Config) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		c.SetCookie(&http.Cookie{
 			Name:     "finrep_session",
@@ -290,6 +336,22 @@ func HandleLogout() echo.HandlerFunc {
 			HttpOnly: true,
 			MaxAge:   -1,
 		})
-		return c.Redirect(http.StatusFound, "/")
+
+		if cfg != nil && cfg.OIDCEnabled && cfg.OIDCIssuer != "" {
+			_, _, _, endSessionEP := getOIDCEndpoints(cfg.OIDCIssuer)
+			if endSessionEP != "" {
+				u, err := url.Parse(endSessionEP)
+				if err == nil {
+					q := u.Query()
+					if cfg.OIDCClientID != "" {
+						q.Set("client_id", cfg.OIDCClientID)
+					}
+					u.RawQuery = q.Encode()
+					return c.Redirect(http.StatusFound, u.String())
+				}
+			}
+		}
+
+		return c.Redirect(http.StatusFound, "/login")
 	}
 }

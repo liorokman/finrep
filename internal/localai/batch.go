@@ -30,7 +30,13 @@ type CategorySuggestionPayload struct {
 
 type TransactionCategorizationResult struct {
 	TransactionID     string                      `json:"transaction_id"`
+	PayeeRaw          string                      `json:"payee_raw,omitempty"`
+	Date              string                      `json:"date,omitempty"`
+	Amount            float64                     `json:"amount,omitempty"`
+	Currency          string                      `json:"currency,omitempty"`
 	CategoryID        *string                     `json:"category_id"`
+	CategoryNameEN    string                      `json:"category_name_en,omitempty"`
+	CategoryNameHE    string                      `json:"category_name_he,omitempty"`
 	SuggestedCategory *CategorySuggestionPayload `json:"suggested_category"`
 	Confidence        float64                     `json:"confidence"`
 }
@@ -59,20 +65,32 @@ Respond ONLY with valid JSON matching this schema:
   ]
 }`
 
+type BatchDetail struct {
+	Index       int                                `json:"index"`
+	Status      string                             `json:"status"` // "pending", "running", "completed", "failed", "skipped", "canceled"
+	TxCount     int                                `json:"tx_count"`
+	Error       string                             `json:"error,omitempty"`
+	Results     []TransactionCategorizationResult `json:"results,omitempty"`
+	CompletedAt *time.Time                         `json:"completed_at,omitempty"`
+}
+
 type CategorizationStatus struct {
-	Running      bool   `json:"running"`
-	Processed    int    `json:"processed"`
-	Total        int    `json:"total"`
-	CurrentBatch int    `json:"current_batch"`
-	TotalBatches int    `json:"total_batches"`
-	LastError    string `json:"last_error"`
+	Running      bool          `json:"running"`
+	Canceled     bool          `json:"canceled"`
+	Processed    int           `json:"processed"`
+	Total        int           `json:"total"`
+	CurrentBatch int           `json:"current_batch"`
+	TotalBatches int           `json:"total_batches"`
+	LastError    string        `json:"last_error"`
+	Batches      []BatchDetail `json:"batches"`
 }
 
 type LocalAIService struct {
-	db     *database.DB
-	client *http.Client
-	mu     sync.RWMutex
-	status CategorizationStatus
+	db         *database.DB
+	client     *http.Client
+	mu         sync.RWMutex
+	status     CategorizationStatus
+	cancelFunc context.CancelFunc
 }
 
 func New(db *database.DB) *LocalAIService {
@@ -94,6 +112,44 @@ func (s *LocalAIService) GetStatus() CategorizationStatus {
 	return s.status
 }
 
+func (s *LocalAIService) GetPrompt() string {
+	val, err := s.db.GetSetting("localai_prompt")
+	if err == nil && strings.TrimSpace(val) != "" {
+		return val
+	}
+	return SystemPrompt
+}
+
+func (s *LocalAIService) SetPrompt(prompt string) error {
+	return s.db.SetSetting("localai_prompt", prompt)
+}
+
+func (s *LocalAIService) ResetPrompt() error {
+	return s.db.SetSetting("localai_prompt", "")
+}
+
+func (s *LocalAIService) CancelBackgroundCategorization() CategorizationStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cancelFunc != nil {
+		s.cancelFunc()
+		s.cancelFunc = nil
+	}
+
+	if s.status.Running {
+		s.status.Running = false
+		s.status.Canceled = true
+		s.status.LastError = "Categorization canceled by user"
+		for i := range s.status.Batches {
+			if s.status.Batches[i].Status == "pending" || s.status.Batches[i].Status == "running" {
+				s.status.Batches[i].Status = "canceled"
+			}
+		}
+	}
+	return s.status
+}
+
 func (s *LocalAIService) StartBackgroundCategorization() (CategorizationStatus, error) {
 	s.mu.Lock()
 	if s.status.Running {
@@ -109,7 +165,7 @@ func (s *LocalAIService) StartBackgroundCategorization() (CategorizationStatus, 
 	}
 
 	if len(txs) == 0 {
-		s.status = CategorizationStatus{Running: false, Total: 0}
+		s.status = CategorizationStatus{Running: false, Total: 0, Batches: []BatchDetail{}}
 		st := s.status
 		s.mu.Unlock()
 		return st, nil
@@ -118,24 +174,43 @@ func (s *LocalAIService) StartBackgroundCategorization() (CategorizationStatus, 
 	const chunkSize = 5
 	numChunks := (len(txs) + chunkSize - 1) / chunkSize
 
+	batches := make([]BatchDetail, numChunks)
+	for i := 0; i < numChunks; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if end > len(txs) {
+			end = len(txs)
+		}
+		batches[i] = BatchDetail{
+			Index:   i + 1,
+			Status:  "pending",
+			TxCount: end - start,
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancelFunc = cancel
+
 	s.status = CategorizationStatus{
 		Running:      true,
+		Canceled:     false,
 		Processed:    0,
 		Total:        len(txs),
 		CurrentBatch: 0,
 		TotalBatches: numChunks,
 		LastError:    "",
+		Batches:      batches,
 	}
 
 	st := s.status
 	s.mu.Unlock()
 
-	go s.runBatchWorker(txs)
+	go s.runBatchWorker(ctx, txs)
 
 	return st, nil
 }
 
-func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
+func (s *LocalAIService) runBatchWorker(ctx context.Context, txs []models.Transaction) {
 	url, _ := s.db.GetSetting("localai_url")
 	if url == "" {
 		url = "http://localhost:8080"
@@ -145,6 +220,7 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 		model = "llama-3-8b"
 	}
 	apiKey, _ := s.db.GetSetting("localai_api_key")
+	sysPrompt := s.GetPrompt()
 
 	baseUrl := strings.TrimRight(url, "/")
 	var endpoint string
@@ -160,15 +236,35 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 	numChunks := (len(txs) + chunkSize - 1) / chunkSize
 
 	for i := 0; i < len(txs); i += chunkSize {
+		select {
+		case <-ctx.Done():
+			slog.Info("Background LocalAI worker received cancel signal, aborting run")
+			s.mu.Lock()
+			s.status.Running = false
+			s.status.Canceled = true
+			for bIdx := range s.status.Batches {
+				if s.status.Batches[bIdx].Status == "pending" || s.status.Batches[bIdx].Status == "running" {
+					s.status.Batches[bIdx].Status = "canceled"
+				}
+			}
+			s.mu.Unlock()
+			return
+		default:
+		}
+
 		end := i + chunkSize
 		if end > len(txs) {
 			end = len(txs)
 		}
 		chunk := txs[i:end]
-		chunkNum := (i / chunkSize) + 1
+		batchIndex := i / chunkSize
+		chunkNum := batchIndex + 1
 
 		s.mu.Lock()
 		s.status.CurrentBatch = chunkNum
+		if batchIndex < len(s.status.Batches) {
+			s.status.Batches[batchIndex].Status = "running"
+		}
 		s.mu.Unlock()
 
 		categories, err := s.db.GetCategories()
@@ -176,6 +272,10 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 			s.mu.Lock()
 			s.status.LastError = fmt.Sprintf("failed to fetch categories: %v", err)
 			s.status.Running = false
+			if batchIndex < len(s.status.Batches) {
+				s.status.Batches[batchIndex].Status = "failed"
+				s.status.Batches[batchIndex].Error = err.Error()
+			}
 			s.mu.Unlock()
 			return
 		}
@@ -196,7 +296,7 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 		reqBody := map[string]interface{}{
 			"model": model,
 			"messages": []map[string]string{
-				{"role": "system", "content": SystemPrompt},
+				{"role": "system", "content": sysPrompt},
 				{"role": "user", "content": fmt.Sprintf("Allowed Categories:\n%s\n\nTransactions to categorize:\n%s", compactCategoriesJSON(categories), jsonString(inputBatch))},
 			},
 			"temperature": 0.1,
@@ -207,6 +307,10 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 			slog.Error("Micro-batch JSON marshal error", "batch", chunkNum, "error", err)
 			s.mu.Lock()
 			s.status.Processed += len(chunk)
+			if batchIndex < len(s.status.Batches) {
+				s.status.Batches[batchIndex].Status = "failed"
+				s.status.Batches[batchIndex].Error = err.Error()
+			}
 			s.mu.Unlock()
 			continue
 		}
@@ -216,7 +320,21 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 
 		// Retry up to 3 times per micro-batch with exponential backoff
 		for attempt := 1; attempt <= 3; attempt++ {
-			reqCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			select {
+			case <-ctx.Done():
+				slog.Info("Background worker canceled during retry loop")
+				s.mu.Lock()
+				s.status.Running = false
+				s.status.Canceled = true
+				if batchIndex < len(s.status.Batches) {
+					s.status.Batches[batchIndex].Status = "canceled"
+				}
+				s.mu.Unlock()
+				return
+			default:
+			}
+
+			reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 			req, err := http.NewRequestWithContext(reqCtx, "POST", endpoint, bytes.NewReader(jsonBytes))
 			if err != nil {
 				cancel()
@@ -255,6 +373,10 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 			s.mu.Lock()
 			s.status.Processed += len(chunk)
 			s.status.LastError = fmt.Sprintf("Warning: batch %d/%d skipped (%v)", chunkNum, numChunks, lastBatchErr)
+			if batchIndex < len(s.status.Batches) {
+				s.status.Batches[batchIndex].Status = "skipped"
+				s.status.Batches[batchIndex].Error = lastBatchErr.Error()
+			}
 			s.mu.Unlock()
 			continue
 		}
@@ -273,6 +395,10 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 			slog.Warn("Micro-batch decode error, skipping batch", "batch", chunkNum, "error", decodeErr)
 			s.mu.Lock()
 			s.status.Processed += len(chunk)
+			if batchIndex < len(s.status.Batches) {
+				s.status.Batches[batchIndex].Status = "skipped"
+				s.status.Batches[batchIndex].Error = decodeErr.Error()
+			}
 			s.mu.Unlock()
 			continue
 		}
@@ -281,6 +407,10 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 			s.mu.Lock()
 			s.status.LastError = fmt.Sprintf("batch %d empty response", chunkNum)
 			s.status.Running = false
+			if batchIndex < len(s.status.Batches) {
+				s.status.Batches[batchIndex].Status = "failed"
+				s.status.Batches[batchIndex].Error = "empty response"
+			}
 			s.mu.Unlock()
 			return
 		}
@@ -294,18 +424,35 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 			slog.Warn("Failed to unmarshal LocalAI batch response JSON", "batch", chunkNum, "error", err, "raw_content", rawContent, "clean_json", cleanJSON)
 			s.mu.Lock()
 			s.status.Processed += len(chunk)
+			if batchIndex < len(s.status.Batches) {
+				s.status.Batches[batchIndex].Status = "skipped"
+				s.status.Batches[batchIndex].Error = fmt.Sprintf("JSON parse error: %v", err)
+			}
 			s.mu.Unlock()
 			continue
 		}
 
+		chunkTxMap := make(map[string]models.Transaction)
+		for _, t := range chunk {
+			chunkTxMap[t.ID] = t
+		}
+
 		// Apply categorizations & suggestions to database immediately
-		for _, item := range batchResp.Categorizations {
+		for itemIdx, item := range batchResp.Categorizations {
 			if item.TransactionID == "" {
 				continue
 			}
 
+			if origTx, ok := chunkTxMap[item.TransactionID]; ok {
+				batchResp.Categorizations[itemIdx].PayeeRaw = origTx.PayeeRaw
+				batchResp.Categorizations[itemIdx].Date = origTx.Date
+				batchResp.Categorizations[itemIdx].Amount = origTx.Amount
+				batchResp.Categorizations[itemIdx].Currency = origTx.Currency
+			}
+
 			latestCats, _ := s.db.GetCategories()
 			var targetCatID *string
+			var targetCatNameEN, targetCatNameHE string
 
 			// 1. Check category_id (matches ID or Name)
 			if item.CategoryID != nil && *item.CategoryID != "" {
@@ -314,6 +461,8 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 					if c.ID == catStr || strings.EqualFold(c.NameEN, catStr) || strings.EqualFold(c.NameHE, catStr) {
 						matchedID := c.ID
 						targetCatID = &matchedID
+						targetCatNameEN = c.NameEN
+						targetCatNameHE = c.NameHE
 						break
 					}
 				}
@@ -326,6 +475,8 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 						(item.SuggestedCategory.NameHE != "" && strings.EqualFold(c.NameHE, item.SuggestedCategory.NameHE)) {
 						matchedID := c.ID
 						targetCatID = &matchedID
+						targetCatNameEN = c.NameEN
+						targetCatNameHE = c.NameHE
 						break
 					}
 				}
@@ -345,13 +496,16 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 					}
 					if err := s.db.CreateCategory(newCat); err == nil {
 						targetCatID = &newCat.ID
+						targetCatNameEN = newCat.NameEN
+						targetCatNameHE = newCat.NameHE
 						slog.Info("Created new category suggested by LocalAI", "category_id", newCat.ID, "name_en", newCat.NameEN, "name_he", newCat.NameHE)
 					}
 				}
 			}
 
-			// 3. Update database
 			if targetCatID != nil {
+				batchResp.Categorizations[itemIdx].CategoryNameEN = targetCatNameEN
+				batchResp.Categorizations[itemIdx].CategoryNameHE = targetCatNameHE
 				if err := s.db.UpdateTransactionCategory(item.TransactionID, targetCatID, true, models.CategorizedByLocalAI); err != nil {
 					slog.Error("Failed to update transaction category", "tx_id", item.TransactionID, "cat_id", *targetCatID, "error", err)
 				} else {
@@ -369,6 +523,12 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 
 		s.mu.Lock()
 		s.status.Processed += len(chunk)
+		now := time.Now()
+		if batchIndex < len(s.status.Batches) {
+			s.status.Batches[batchIndex].Status = "completed"
+			s.status.Batches[batchIndex].Results = batchResp.Categorizations
+			s.status.Batches[batchIndex].CompletedAt = &now
+		}
 		s.mu.Unlock()
 
 		slog.Info("Background worker saved micro-batch to SQLite", "batch", chunkNum, "total_batches", numChunks, "processed", s.status.Processed)

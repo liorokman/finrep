@@ -41,7 +41,7 @@ func TestOIDCHandlers(t *testing.T) {
 	recLogout := httptest.NewRecorder()
 	cLogout := e.NewContext(reqLogout, recLogout)
 
-	err = HandleLogout()(cLogout)
+	err = HandleLogout(cfg)(cLogout)
 	if err != nil {
 		t.Fatalf("HandleLogout failed: %v", err)
 	}
