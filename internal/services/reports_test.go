@@ -61,7 +61,7 @@ func TestReportService_NewReports(t *testing.T) {
 	_ = links
 
 	// Test MoM Heatmap
-	rows, err := svc.GetMoMHeatmap()
+	rows, err := svc.GetMoMHeatmap("", "", "")
 	if err != nil {
 		t.Fatalf("GetMoMHeatmap failed: %v", err)
 	}

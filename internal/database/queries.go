@@ -252,14 +252,15 @@ func (db *DB) GetDailyOccurrenceOrdinal(accountID, dateStr string, amount float6
 }
 
 type TransactionFilter struct {
-	AccountID   string
-	CategoryID  string
-	Unreviewed  *bool
-	Search      string
-	StartDate   string
-	EndDate     string
-	Limit       int
-	Offset      int
+	AccountID    string
+	CategoryID   string
+	CategoryType string
+	Unreviewed   *bool
+	Search       string
+	StartDate    string
+	EndDate      string
+	Limit        int
+	Offset       int
 }
 
 func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int, error) {
@@ -274,7 +275,13 @@ func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int,
 		LEFT JOIN categories c ON t.category_id = c.id
 		WHERE 1=1
 	`
-	countQuery := `SELECT COUNT(*) FROM transactions t WHERE 1=1`
+	countQuery := `
+		SELECT COUNT(*) 
+		FROM transactions t
+		JOIN accounts a ON t.account_id = a.id
+		LEFT JOIN categories c ON t.category_id = c.id
+		WHERE 1=1
+	`
 	var args []interface{}
 	var countArgs []interface{}
 
@@ -289,6 +296,12 @@ func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int,
 		countQuery += " AND t.category_id = ?"
 		args = append(args, f.CategoryID)
 		countArgs = append(countArgs, f.CategoryID)
+	}
+	if f.CategoryType != "" {
+		query += " AND c.category_type = ?"
+		countQuery += " AND c.category_type = ?"
+		args = append(args, f.CategoryType)
+		countArgs = append(countArgs, f.CategoryType)
 	}
 	if f.Unreviewed != nil {
 		isReviewedVal := 0

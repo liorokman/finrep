@@ -168,15 +168,30 @@ func (s *ReportService) GetNetWorthTrend() ([]NetWorthPoint, error) {
 	return points, nil
 }
 
-func (s *ReportService) GetCashFlowSummary() ([]CashFlowPoint, error) {
-	rows, err := s.db.Query(`
+func (s *ReportService) GetCashFlowSummary(accountID, startDate, endDate string) ([]CashFlowPoint, error) {
+	query := `
 		SELECT strftime('%Y-%m', date) as month,
 		       SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
 		       SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
 		FROM transactions
-		GROUP BY month
-		ORDER BY month ASC
-	`)
+		WHERE 1=1
+	`
+	var args []interface{}
+	if accountID != "" {
+		query += " AND account_id = ?"
+		args = append(args, accountID)
+	}
+	if startDate != "" {
+		query += " AND date >= ?"
+		args = append(args, startDate)
+	}
+	if endDate != "" {
+		query += " AND date <= ?"
+		args = append(args, endDate)
+	}
+	query += " GROUP BY month ORDER BY month ASC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -197,15 +212,29 @@ func (s *ReportService) GetCashFlowSummary() ([]CashFlowPoint, error) {
 	return points, nil
 }
 
-func (s *ReportService) GetCategoryDonut() ([]CategoryDonutItem, error) {
-	rows, err := s.db.Query(`
+func (s *ReportService) GetCategoryDonut(accountID, startDate, endDate string) ([]CategoryDonutItem, error) {
+	query := `
 		SELECT c.id, c.name_en, c.color_hex, SUM(ABS(t.amount)) as total
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
-		GROUP BY c.id
-		ORDER BY total DESC
-	`)
+	`
+	var args []interface{}
+	if accountID != "" {
+		query += " AND t.account_id = ?"
+		args = append(args, accountID)
+	}
+	if startDate != "" {
+		query += " AND t.date >= ?"
+		args = append(args, startDate)
+	}
+	if endDate != "" {
+		query += " AND t.date <= ?"
+		args = append(args, endDate)
+	}
+	query += " GROUP BY c.id ORDER BY total DESC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -230,17 +259,24 @@ func (s *ReportService) GetCategoryDonut() ([]CategoryDonutItem, error) {
 	return items, nil
 }
 
-func (s *ReportService) GetBudgetVsActual() ([]BudgetVsActualItem, error) {
-	currentMonth := time.Now().Format("2006-01")
-	rows, err := s.db.Query(`
+func (s *ReportService) GetBudgetVsActual(accountID, month string) ([]BudgetVsActualItem, error) {
+	if month == "" {
+		month = time.Now().Format("2006-01")
+	}
+	query := `
 		SELECT c.id, c.name_en, COALESCE(c.monthly_budget, 0), COALESCE(SUM(ABS(t.amount)), 0)
 		FROM categories c
 		LEFT JOIN transactions t ON c.id = t.category_id AND t.amount < 0
 		  AND strftime('%Y-%m', t.date) = ?
-		WHERE c.category_type = 'EXPENSE'
-		GROUP BY c.id
-		ORDER BY c.name_en ASC
-	`, currentMonth)
+	`
+	args := []interface{}{month}
+	if accountID != "" {
+		query += " AND t.account_id = ?"
+		args = append(args, accountID)
+	}
+	query += " WHERE c.category_type = 'EXPENSE' GROUP BY c.id ORDER BY c.name_en ASC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -258,16 +294,21 @@ func (s *ReportService) GetBudgetVsActual() ([]BudgetVsActualItem, error) {
 	return items, nil
 }
 
-func (s *ReportService) GetSubscriptions() ([]SubscriptionItem, error) {
-	rows, err := s.db.Query(`
+func (s *ReportService) GetSubscriptions(accountID string) ([]SubscriptionItem, error) {
+	query := `
 		SELECT t.payee_raw, COALESCE(c.name_en, 'General'), AVG(ABS(t.amount)), COUNT(*)
 		FROM transactions t
 		LEFT JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
-		GROUP BY t.payee_raw
-		HAVING COUNT(*) >= 2
-		ORDER BY AVG(ABS(t.amount)) DESC
-	`)
+	`
+	var args []interface{}
+	if accountID != "" {
+		query += " AND t.account_id = ?"
+		args = append(args, accountID)
+	}
+	query += " GROUP BY t.payee_raw HAVING COUNT(*) >= 2 ORDER BY AVG(ABS(t.amount)) DESC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -285,14 +326,20 @@ func (s *ReportService) GetSubscriptions() ([]SubscriptionItem, error) {
 	return items, nil
 }
 
-func (s *ReportService) GetCCPayoffForecast() ([]CCPayoffItem, error) {
-	rows, err := s.db.Query(`
+func (s *ReportService) GetCCPayoffForecast(accountID string) ([]CCPayoffItem, error) {
+	query := `
 		SELECT strftime('%Y-%m', date) as month, SUM(ABS(amount))
 		FROM transactions
 		WHERE current_installment IS NOT NULL AND total_installments IS NOT NULL
-		GROUP BY month
-		ORDER BY month ASC
-	`)
+	`
+	var args []interface{}
+	if accountID != "" {
+		query += " AND account_id = ?"
+		args = append(args, accountID)
+	}
+	query += " GROUP BY month ORDER BY month ASC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -361,24 +408,40 @@ func (s *ReportService) GetAnomalies() ([]AnomalyItem, error) {
 }
 
 // GetMoMHeatmap returns a category × last-6-months spending matrix
-func (s *ReportService) GetMoMHeatmap() ([]MoMRow, error) {
+func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]MoMRow, error) {
 	now := time.Now()
 	var months []string
 	for i := 5; i >= 0; i-- {
 		months = append(months, now.AddDate(0, -i, 0).Format("2006-01"))
 	}
 
-	rows, err := s.db.Query(`
+	query := `
 		SELECT c.name_en, c.color_hex,
 		       strftime('%Y-%m', t.date) as month,
 		       SUM(ABS(t.amount)) as total
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
-		  AND strftime('%Y-%m', t.date) >= ?
-		GROUP BY c.name_en, month
-		ORDER BY c.name_en ASC, month ASC
-	`, months[0])
+	`
+	var args []interface{}
+	if startDate != "" {
+		query += " AND t.date >= ?"
+		args = append(args, startDate)
+	} else {
+		query += " AND strftime('%Y-%m', t.date) >= ?"
+		args = append(args, months[0])
+	}
+	if endDate != "" {
+		query += " AND t.date <= ?"
+		args = append(args, endDate)
+	}
+	if accountID != "" {
+		query += " AND t.account_id = ?"
+		args = append(args, accountID)
+	}
+	query += " GROUP BY c.name_en, month ORDER BY c.name_en ASC, month ASC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}

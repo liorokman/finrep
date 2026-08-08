@@ -79,7 +79,11 @@ func New(db *database.DB) *LocalAIService {
 	return &LocalAIService{
 		db: db,
 		client: &http.Client{
-			Timeout: 180 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:      10,
+				IdleConnTimeout:   90 * time.Second,
+				DisableKeepAlives: false,
+			},
 		},
 	}
 }
@@ -132,7 +136,6 @@ func (s *LocalAIService) StartBackgroundCategorization() (CategorizationStatus, 
 }
 
 func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
-	ctx := context.Background()
 	url, _ := s.db.GetSetting("localai_url")
 	if url == "" {
 		url = "http://localhost:8080"
@@ -201,43 +204,59 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 
 		jsonBytes, err := json.Marshal(reqBody)
 		if err != nil {
+			slog.Error("Micro-batch JSON marshal error", "batch", chunkNum, "error", err)
 			s.mu.Lock()
-			s.status.LastError = fmt.Sprintf("batch %d JSON encode failed: %v", chunkNum, err)
-			s.status.Running = false
+			s.status.Processed += len(chunk)
 			s.mu.Unlock()
-			return
+			continue
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBytes))
-		if err != nil {
-			s.mu.Lock()
-			s.status.LastError = fmt.Sprintf("batch %d request create failed: %v", chunkNum, err)
-			s.status.Running = false
-			s.mu.Unlock()
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+apiKey)
+		var resp *http.Response
+		var lastBatchErr error
+
+		// Retry up to 3 times per micro-batch with exponential backoff
+		for attempt := 1; attempt <= 3; attempt++ {
+			reqCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			req, err := http.NewRequestWithContext(reqCtx, "POST", endpoint, bytes.NewReader(jsonBytes))
+			if err != nil {
+				cancel()
+				lastBatchErr = err
+				break
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if apiKey != "" {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+
+			resp, err = s.client.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				cancel()
+				break
+			}
+
+			if err != nil {
+				lastBatchErr = err
+				slog.Warn("Micro-batch request failed, retrying", "batch", chunkNum, "attempt", attempt, "error", err)
+			} else {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				lastBatchErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+				slog.Warn("Micro-batch returned non-200 status, retrying", "batch", chunkNum, "attempt", attempt, "status", resp.StatusCode)
+			}
+			cancel()
+
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
 		}
 
-		resp, err := s.client.Do(req)
-		if err != nil {
+		if lastBatchErr != nil && (resp == nil || resp.StatusCode != http.StatusOK) {
+			slog.Error("Micro-batch failed after 3 attempts, skipping batch and continuing", "batch", chunkNum, "error", lastBatchErr)
 			s.mu.Lock()
-			s.status.LastError = fmt.Sprintf("batch %d connection failed: %v", chunkNum, err)
-			s.status.Running = false
+			s.status.Processed += len(chunk)
+			s.status.LastError = fmt.Sprintf("Warning: batch %d/%d skipped (%v)", chunkNum, numChunks, lastBatchErr)
 			s.mu.Unlock()
-			return
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			s.mu.Lock()
-			s.status.LastError = fmt.Sprintf("batch %d returned HTTP %d: %s", chunkNum, resp.StatusCode, string(body))
-			s.status.Running = false
-			s.mu.Unlock()
-			return
+			continue
 		}
 
 		var chatResp struct {
@@ -251,11 +270,11 @@ func (s *LocalAIService) runBatchWorker(txs []models.Transaction) {
 		decodeErr := json.NewDecoder(resp.Body).Decode(&chatResp)
 		resp.Body.Close()
 		if decodeErr != nil {
+			slog.Warn("Micro-batch decode error, skipping batch", "batch", chunkNum, "error", decodeErr)
 			s.mu.Lock()
-			s.status.LastError = fmt.Sprintf("batch %d decode error: %v", chunkNum, decodeErr)
-			s.status.Running = false
+			s.status.Processed += len(chunk)
 			s.mu.Unlock()
-			return
+			continue
 		}
 
 		if len(chatResp.Choices) == 0 {

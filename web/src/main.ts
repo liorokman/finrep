@@ -128,7 +128,33 @@ let authInfo: any = null;
 
 let txTotal = 0;
 let txPage = 0;
-const TX_PAGE_SIZE = 50;
+let txLimit = 25;
+
+// Transactions Filter state
+let txFilterAccountID = '';
+let txFilterCategoryType = '';
+let txFilterStartDate = '';
+let txFilterEndDate = '';
+let txFilterSearch = '';
+
+// Per-widget filter state
+let widgetFilters = {
+  cashflowAcc: '',
+  donutAcc: '',
+  payoffAcc: '',
+  budgetAcc: '',
+  subscriptionsAcc: '',
+  momAcc: '',
+};
+
+function renderWidgetAccountSelector(id: string, currentValue: string) {
+  return `
+    <select id="${id}" class="bg-slate-900 border border-slate-700/80 rounded-md px-2 py-1 text-[11px] text-slate-300 focus:outline-none focus:border-brand-500">
+      <option value="">All Accounts</option>
+      ${accountsList.map(a => `<option value="${a.id}" ${currentValue === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+    </select>
+  `;
+}
 
 let showAddAccountModal = false;
 let showAddCategoryModal = false;
@@ -182,21 +208,31 @@ async function initApp() {
 
 async function loadData() {
   try {
+    const txParams = new URLSearchParams({
+      limit: String(txLimit),
+      offset: String(txPage * txLimit),
+    });
+    if (txFilterAccountID) txParams.set('account_id', txFilterAccountID);
+    if (txFilterCategoryType) txParams.set('category_type', txFilterCategoryType);
+    if (txFilterStartDate) txParams.set('start_date', txFilterStartDate);
+    if (txFilterEndDate) txParams.set('end_date', txFilterEndDate);
+    if (txFilterSearch) txParams.set('search', txFilterSearch);
+
     const [accRes, txRes, catRes, bvaRes, subRes, donutRes, cfRes, authRes,
            nwRes, ccRes, fxRes, anomRes, momRes, sankeyRes, settingsRes] = await Promise.all([
       fetch('/api/v1/accounts'),
-      fetch(`/api/v1/transactions?limit=${TX_PAGE_SIZE}&offset=${txPage * TX_PAGE_SIZE}`),
+      fetch(`/api/v1/transactions?${txParams.toString()}`),
       fetch('/api/v1/categories'),
-      fetch('/api/v1/reports/budget-vs-actual'),
-      fetch('/api/v1/reports/subscriptions'),
-      fetch('/api/v1/reports/category-donut'),
-      fetch('/api/v1/reports/cash-flow'),
+      fetch(`/api/v1/reports/budget-vs-actual?account_id=${widgetFilters.budgetAcc}`),
+      fetch(`/api/v1/reports/subscriptions?account_id=${widgetFilters.subscriptionsAcc}`),
+      fetch(`/api/v1/reports/category-donut?account_id=${widgetFilters.donutAcc}`),
+      fetch(`/api/v1/reports/cash-flow?account_id=${widgetFilters.cashflowAcc}`),
       fetch('/api/v1/auth/info'),
       fetch('/api/v1/reports/net-worth'),
-      fetch('/api/v1/reports/cc-payoff'),
+      fetch(`/api/v1/reports/cc-payoff?account_id=${widgetFilters.payoffAcc}`),
       fetch('/api/v1/reports/foreign-currency'),
       fetch('/api/v1/reports/anomalies'),
-      fetch('/api/v1/reports/mom-heatmap'),
+      fetch(`/api/v1/reports/mom-heatmap?account_id=${widgetFilters.momAcc}`),
       fetch('/api/v1/reports/sankey'),
       fetch('/api/v1/settings'),
     ]);
@@ -232,7 +268,17 @@ async function loadData() {
 
 async function loadTransactions() {
   try {
-    const res = await fetch(`/api/v1/transactions?limit=${TX_PAGE_SIZE}&offset=${txPage * TX_PAGE_SIZE}`);
+    const params = new URLSearchParams({
+      limit: String(txLimit),
+      offset: String(txPage * txLimit),
+    });
+    if (txFilterAccountID) params.set('account_id', txFilterAccountID);
+    if (txFilterCategoryType) params.set('category_type', txFilterCategoryType);
+    if (txFilterStartDate) params.set('start_date', txFilterStartDate);
+    if (txFilterEndDate) params.set('end_date', txFilterEndDate);
+    if (txFilterSearch) params.set('search', txFilterSearch);
+
+    const res = await fetch(`/api/v1/transactions?${params.toString()}`);
     if (res.status === 401) {
       window.location.href = '/auth/login';
       return;
@@ -393,13 +439,19 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
       <!-- Charts Row 1: Cash Flow + Category Donut -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="glass-panel p-6 space-y-4">
-          <h3 class="font-bold text-sm text-white">Monthly Cash Flow (Income vs Expenses)</h3>
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-sm text-white">Monthly Cash Flow (Income vs Expenses)</h3>
+            ${renderWidgetAccountSelector('widget-acc-cashflow', widgetFilters.cashflowAcc)}
+          </div>
           <div class="h-64 relative">
             <canvas id="cashflow-chart-canvas"></canvas>
           </div>
         </div>
         <div class="glass-panel p-6 space-y-4">
-          <h3 class="font-bold text-sm text-white">Category Expense Breakdown</h3>
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-sm text-white">Category Expense Breakdown</h3>
+            ${renderWidgetAccountSelector('widget-acc-donut', widgetFilters.donutAcc)}
+          </div>
           <div class="h-64 relative">
             <canvas id="donut-chart-canvas"></canvas>
           </div>
@@ -409,13 +461,18 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
       <!-- Charts Row 2: Net Worth Trend + CC Payoff -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="glass-panel p-6 space-y-4">
-          <h3 class="font-bold text-sm text-white">Net Worth Over Time</h3>
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-sm text-white">Net Worth Over Time</h3>
+          </div>
           <div class="h-64 relative">
             <canvas id="networth-chart-canvas"></canvas>
           </div>
         </div>
         <div class="glass-panel p-6 space-y-4">
-          <h3 class="font-bold text-sm text-white">Installment Payoff Forecast</h3>
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-sm text-white">Installment Payoff Forecast</h3>
+            ${renderWidgetAccountSelector('widget-acc-payoff', widgetFilters.payoffAcc)}
+          </div>
           <div class="h-64 relative">
             ${ccPayoffData.length === 0
               ? `<div class="flex items-center justify-center h-full text-slate-500 text-xs">No installment transactions found.</div>`
@@ -427,7 +484,10 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
       <!-- Budget vs Actual & Subscriptions -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="glass-panel p-6 space-y-4">
-          <h3 class="font-bold text-sm text-white">Budget vs Actual (This Month)</h3>
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-sm text-white">Budget vs Actual (This Month)</h3>
+            ${renderWidgetAccountSelector('widget-acc-budget', widgetFilters.budgetAcc)}
+          </div>
           <div class="space-y-3">
             ${budgetVsActualList.length === 0
               ? `<p class="text-xs text-slate-500">No category budgets defined yet. Set budgets in the Categories tab.</p>`
@@ -450,7 +510,10 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
         </div>
 
         <div class="glass-panel p-6 space-y-4">
-          <h3 class="font-bold text-sm text-white">Recurring Fixed Subscriptions</h3>
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-sm text-white">Recurring Fixed Subscriptions</h3>
+            ${renderWidgetAccountSelector('widget-acc-subscriptions', widgetFilters.subscriptionsAcc)}
+          </div>
           <div class="space-y-2">
             ${subscriptionsList.length === 0
               ? `<p class="text-xs text-slate-500">No recurring subscriptions detected.</p>`
@@ -469,7 +532,10 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
 
       <!-- MoM Heatmap -->
       <div class="glass-panel p-6 space-y-4">
-        <h3 class="font-bold text-sm text-white">Month-over-Month Spending Heatmap</h3>
+        <div class="flex items-center justify-between">
+          <h3 class="font-bold text-sm text-white">Month-over-Month Spending Heatmap</h3>
+          ${renderWidgetAccountSelector('widget-acc-mom', widgetFilters.momAcc)}
+        </div>
         ${momHeatmapData.length === 0
           ? `<p class="text-xs text-slate-500">No categorized expense data yet.</p>`
           : `<div id="mom-heatmap-container" class="overflow-x-auto">
@@ -702,8 +768,9 @@ function renderAccountModal() {
 function renderTransactionsView() {
   const pendingCount = transactionsList.filter(t => t.suggested_category_en).length;
   const uncategorizedCount = transactionsList.filter(t => !t.category_id && !t.suggested_category_en).length;
-  const totalPages = Math.ceil(txTotal / TX_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(txTotal / txLimit));
   const currentPage = txPage + 1;
+  const hasActiveFilters = Boolean(txFilterAccountID || txFilterCategoryType || txFilterStartDate || txFilterEndDate || txFilterSearch);
 
   let subtitleHTML = `<span class="text-emerald-400 font-semibold">✓ All transactions categorized</span>`;
   if (pendingCount > 0) {
@@ -719,22 +786,80 @@ function renderTransactionsView() {
           <h2 class="text-2xl font-bold text-white">Transaction Ledger</h2>
           <p class="text-xs text-slate-400 mt-1">${subtitleHTML}</p>
         </div>
-        <span class="text-xs text-slate-400">${txTotal} total transactions</span>
+        <span class="text-xs text-slate-400">${txTotal} total transactions ${hasActiveFilters ? '(filtered)' : ''}</span>
+      </div>
+
+      <!-- Smart Filter Toolbar -->
+      <div class="glass-panel p-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 items-end">
+          <!-- Account Filter -->
+          <div>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">Account</label>
+            <select id="tx-filter-account" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500">
+              <option value="">All Accounts</option>
+              ${accountsList.map(a => `<option value="${a.id}" ${txFilterAccountID === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+            </select>
+          </div>
+
+          <!-- Category Type Filter -->
+          <div>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">Category Type</label>
+            <select id="tx-filter-type" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500">
+              <option value="" ${txFilterCategoryType === '' ? 'selected' : ''}>All Types</option>
+              <option value="EXPENSE" ${txFilterCategoryType === 'EXPENSE' ? 'selected' : ''}>Expense</option>
+              <option value="INCOME" ${txFilterCategoryType === 'INCOME' ? 'selected' : ''}>Income</option>
+              <option value="TRANSFER" ${txFilterCategoryType === 'TRANSFER' ? 'selected' : ''}>Transfer</option>
+            </select>
+          </div>
+
+          <!-- Date Range: From -->
+          <div>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">From Date</label>
+            <input type="date" id="tx-filter-start" value="${txFilterStartDate}" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500" />
+          </div>
+
+          <!-- Date Range: To -->
+          <div>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">To Date</label>
+            <input type="date" id="tx-filter-end" value="${txFilterEndDate}" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500" />
+          </div>
+
+          <!-- Search Input & Clear Button -->
+          <div class="flex items-center gap-2">
+            <div class="flex-1">
+              <label class="block text-[11px] font-medium text-slate-400 mb-1">Search</label>
+              <input type="text" id="tx-filter-search" value="${txFilterSearch}" placeholder="Payee or notes..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500" />
+            </div>
+            ${hasActiveFilters ? `
+              <button id="btn-tx-clear-filters" title="Clear Filters" class="mt-5 px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 text-xs font-semibold transition">Clear</button>
+            ` : ''}
+          </div>
+        </div>
       </div>
 
       <div class="glass-panel p-6">
         ${renderTransactionTableRows(transactionsList)}
 
-        <!-- Pagination -->
-        ${txTotal > TX_PAGE_SIZE ? `
-          <div class="flex items-center justify-between mt-6 pt-4 border-t border-slate-800">
+        <!-- Pagination & Page Size Toolbar -->
+        <div class="flex flex-wrap items-center justify-between mt-6 pt-4 border-t border-slate-800 gap-4">
+          <div class="flex items-center gap-3">
             <span class="text-xs text-slate-400">Page ${currentPage} of ${totalPages} &bull; ${txTotal} total</span>
-            <div class="flex gap-2">
-              <button id="btn-tx-prev" ${txPage === 0 ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-medium ${txPage === 0 ? 'text-slate-600 bg-slate-900/40 cursor-not-allowed' : 'text-slate-300 bg-slate-800 hover:bg-slate-700 transition'}">← Prev</button>
-              <button id="btn-tx-next" ${currentPage >= totalPages ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-medium ${currentPage >= totalPages ? 'text-slate-600 bg-slate-900/40 cursor-not-allowed' : 'text-slate-300 bg-slate-800 hover:bg-slate-700 transition'}">Next →</button>
+            <div class="flex items-center gap-1.5 pl-3 border-l border-slate-800 text-xs text-slate-400">
+              <span>Per page:</span>
+              <select id="tx-page-size" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white">
+                <option value="10" ${txLimit === 10 ? 'selected' : ''}>10</option>
+                <option value="25" ${txLimit === 25 ? 'selected' : ''}>25</option>
+                <option value="50" ${txLimit === 50 ? 'selected' : ''}>50</option>
+                <option value="100" ${txLimit === 100 ? 'selected' : ''}>100</option>
+              </select>
             </div>
           </div>
-        ` : ''}
+
+          <div class="flex gap-2">
+            <button id="btn-tx-prev" ${txPage === 0 ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-medium ${txPage === 0 ? 'text-slate-600 bg-slate-900/40 cursor-not-allowed' : 'text-slate-300 bg-slate-800 hover:bg-slate-700 transition'}">← Prev</button>
+            <button id="btn-tx-next" ${currentPage >= totalPages ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-xs font-medium ${currentPage >= totalPages ? 'text-slate-600 bg-slate-900/40 cursor-not-allowed' : 'text-slate-300 bg-slate-800 hover:bg-slate-700 transition'}">Next →</button>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -2030,7 +2155,92 @@ function attachEvents() {
     });
   });
 
-  // ---- Transaction Pagination ----
+  // ---- Widget-level Account Filters ----
+  document.getElementById('widget-acc-cashflow')?.addEventListener('change', async (e) => {
+    widgetFilters.cashflowAcc = (e.target as HTMLSelectElement).value;
+    await loadData();
+    renderApp();
+  });
+  document.getElementById('widget-acc-donut')?.addEventListener('change', async (e) => {
+    widgetFilters.donutAcc = (e.target as HTMLSelectElement).value;
+    await loadData();
+    renderApp();
+  });
+  document.getElementById('widget-acc-payoff')?.addEventListener('change', async (e) => {
+    widgetFilters.payoffAcc = (e.target as HTMLSelectElement).value;
+    await loadData();
+    renderApp();
+  });
+  document.getElementById('widget-acc-budget')?.addEventListener('change', async (e) => {
+    widgetFilters.budgetAcc = (e.target as HTMLSelectElement).value;
+    await loadData();
+    renderApp();
+  });
+  document.getElementById('widget-acc-subscriptions')?.addEventListener('change', async (e) => {
+    widgetFilters.subscriptionsAcc = (e.target as HTMLSelectElement).value;
+    await loadData();
+    renderApp();
+  });
+  document.getElementById('widget-acc-mom')?.addEventListener('change', async (e) => {
+    widgetFilters.momAcc = (e.target as HTMLSelectElement).value;
+    await loadData();
+    renderApp();
+  });
+
+  // ---- Transaction Filters & Pagination ----
+  document.getElementById('tx-filter-account')?.addEventListener('change', async (e) => {
+    txFilterAccountID = (e.target as HTMLSelectElement).value;
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  document.getElementById('tx-filter-type')?.addEventListener('change', async (e) => {
+    txFilterCategoryType = (e.target as HTMLSelectElement).value;
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  document.getElementById('tx-filter-start')?.addEventListener('change', async (e) => {
+    txFilterStartDate = (e.target as HTMLInputElement).value;
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  document.getElementById('tx-filter-end')?.addEventListener('change', async (e) => {
+    txFilterEndDate = (e.target as HTMLInputElement).value;
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  document.getElementById('tx-filter-search')?.addEventListener('change', async (e) => {
+    txFilterSearch = (e.target as HTMLInputElement).value;
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  document.getElementById('btn-tx-clear-filters')?.addEventListener('click', async () => {
+    txFilterAccountID = '';
+    txFilterCategoryType = '';
+    txFilterStartDate = '';
+    txFilterEndDate = '';
+    txFilterSearch = '';
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
+  document.getElementById('tx-page-size')?.addEventListener('change', async (e) => {
+    txLimit = parseInt((e.target as HTMLSelectElement).value) || 25;
+    txPage = 0;
+    await loadTransactions();
+    renderApp();
+  });
+
   document.getElementById('btn-tx-prev')?.addEventListener('click', async () => {
     if (txPage > 0) {
       txPage--;
@@ -2040,7 +2250,7 @@ function attachEvents() {
   });
 
   document.getElementById('btn-tx-next')?.addEventListener('click', async () => {
-    if ((txPage + 1) * TX_PAGE_SIZE < txTotal) {
+    if ((txPage + 1) * txLimit < txTotal) {
       txPage++;
       await loadTransactions();
       renderApp();

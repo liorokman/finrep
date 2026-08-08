@@ -221,14 +221,15 @@ func (h *Handler) QueryTransactions(c echo.Context) error {
 	}
 
 	filter := database.TransactionFilter{
-		AccountID:  c.QueryParam("account_id"),
-		CategoryID: c.QueryParam("category_id"),
-		Unreviewed: unreviewed,
-		Search:     c.QueryParam("search"),
-		StartDate:  c.QueryParam("start_date"),
-		EndDate:    c.QueryParam("end_date"),
-		Limit:      limit,
-		Offset:     offset,
+		AccountID:    c.QueryParam("account_id"),
+		CategoryID:   c.QueryParam("category_id"),
+		CategoryType: c.QueryParam("category_type"),
+		Unreviewed:   unreviewed,
+		Search:       c.QueryParam("search"),
+		StartDate:    c.QueryParam("start_date"),
+		EndDate:      c.QueryParam("end_date"),
+		Limit:        limit,
+		Offset:       offset,
 	}
 
 	txs, total, err := h.db.QueryTransactions(filter)
@@ -515,7 +516,11 @@ func (h *Handler) GetNetWorthReport(c echo.Context) error {
 }
 
 func (h *Handler) GetCashFlowReport(c echo.Context) error {
-	res, err := h.reportSvc.GetCashFlowSummary()
+	res, err := h.reportSvc.GetCashFlowSummary(
+		c.QueryParam("account_id"),
+		c.QueryParam("start_date"),
+		c.QueryParam("end_date"),
+	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -523,7 +528,11 @@ func (h *Handler) GetCashFlowReport(c echo.Context) error {
 }
 
 func (h *Handler) GetCategoryDonutReport(c echo.Context) error {
-	res, err := h.reportSvc.GetCategoryDonut()
+	res, err := h.reportSvc.GetCategoryDonut(
+		c.QueryParam("account_id"),
+		c.QueryParam("start_date"),
+		c.QueryParam("end_date"),
+	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -531,7 +540,10 @@ func (h *Handler) GetCategoryDonutReport(c echo.Context) error {
 }
 
 func (h *Handler) GetBudgetVsActualReport(c echo.Context) error {
-	res, err := h.reportSvc.GetBudgetVsActual()
+	res, err := h.reportSvc.GetBudgetVsActual(
+		c.QueryParam("account_id"),
+		c.QueryParam("month"),
+	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -539,7 +551,7 @@ func (h *Handler) GetBudgetVsActualReport(c echo.Context) error {
 }
 
 func (h *Handler) GetSubscriptionsReport(c echo.Context) error {
-	res, err := h.reportSvc.GetSubscriptions()
+	res, err := h.reportSvc.GetSubscriptions(c.QueryParam("account_id"))
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -547,7 +559,7 @@ func (h *Handler) GetSubscriptionsReport(c echo.Context) error {
 }
 
 func (h *Handler) GetCCPayoffReport(c echo.Context) error {
-	res, err := h.reportSvc.GetCCPayoffForecast()
+	res, err := h.reportSvc.GetCCPayoffForecast(c.QueryParam("account_id"))
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -623,7 +635,11 @@ func (h *Handler) GetSankeyReport(c echo.Context) error {
 }
 
 func (h *Handler) GetMoMHeatmapReport(c echo.Context) error {
-	res, err := h.reportSvc.GetMoMHeatmap()
+	res, err := h.reportSvc.GetMoMHeatmap(
+		c.QueryParam("account_id"),
+		c.QueryParam("start_date"),
+		c.QueryParam("end_date"),
+	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
