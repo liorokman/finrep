@@ -63,11 +63,31 @@ func isUTF8(data []byte) bool {
 	return true
 }
 
-// ParseCSV parses raw CSV data into models.Transaction items using the provided ImportPreset
-func (p *CSVParser) ParseCSV(accountID string, rawBytes []byte, preset *models.ImportPreset) ([]models.Transaction, int, error) {
+type InspectResult struct {
+	Columns    []string   `json:"columns"`
+	SampleRows [][]string `json:"sample_rows"`
+	TotalRows  int        `json:"total_rows"`
+}
+
+type StagingFailedRow struct {
+	RowIndex int      `json:"row_index"`
+	RawRow   []string `json:"raw_row"`
+	Reason   string   `json:"reason"`
+}
+
+type StagingResult struct {
+	PassedTransactions []models.Transaction `json:"passed_transactions"`
+	FailedRows         []StagingFailedRow   `json:"failed_rows"`
+	PassedCount        int                  `json:"passed_count"`
+	FailedCount        int                  `json:"failed_count"`
+	DuplicateCount     int                  `json:"duplicate_count"`
+}
+
+// InspectCSV decodes CSV and extracts column headers and up to 10 sample rows
+func (p *CSVParser) InspectCSV(rawBytes []byte) (*InspectResult, error) {
 	utf8Bytes, err := DecodeToUTF8(rawBytes)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	r := csv.NewReader(bytes.NewReader(utf8Bytes))
@@ -76,11 +96,47 @@ func (p *CSVParser) ParseCSV(accountID string, rawBytes []byte, preset *models.I
 
 	rows, err := r.ReadAll()
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to parse CSV rows: %w", err)
+		return nil, fmt.Errorf("failed to read CSV: %w", err)
 	}
 
 	if len(rows) == 0 {
-		return nil, 0, nil
+		return &InspectResult{Columns: []string{}, SampleRows: [][]string{}, TotalRows: 0}, nil
+	}
+
+	columns := rows[0]
+	var sampleRows [][]string
+	for i := 1; i < len(rows) && i <= 10; i++ {
+		sampleRows = append(sampleRows, rows[i])
+	}
+
+	return &InspectResult{
+		Columns:    columns,
+		SampleRows: sampleRows,
+		TotalRows:  len(rows) - 1,
+	}, nil
+}
+
+// StageCSV validates all rows against column mappings and returns passed and failed items
+func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.ImportPreset) (*StagingResult, error) {
+	utf8Bytes, err := DecodeToUTF8(rawBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	r := csv.NewReader(bytes.NewReader(utf8Bytes))
+	r.LazyQuotes = true
+	r.FieldsPerRecord = -1
+
+	rows, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CSV rows: %w", err)
+	}
+
+	if len(rows) == 0 {
+		return &StagingResult{
+			PassedTransactions: []models.Transaction{},
+			FailedRows:         []StagingFailedRow{},
+		}, nil
 	}
 
 	headerMap := make(map[string]int)
@@ -93,8 +149,9 @@ func (p *CSVParser) ParseCSV(accountID string, rawBytes []byte, preset *models.I
 		}
 	}
 
-	var parsedTxs []models.Transaction
-	duplicates := 0
+	var passedTxs []models.Transaction
+	var failedRows []StagingFailedRow
+	duplicateCount := 0
 
 	for idx := startIndex; idx < len(rows); idx++ {
 		row := rows[idx]
@@ -105,24 +162,38 @@ func (p *CSVParser) ParseCSV(accountID string, rawBytes []byte, preset *models.I
 		dateStr := getColumnValue(row, headerMap, preset.DateColumn)
 		payeeRaw := getColumnValue(row, headerMap, preset.PayeeColumn)
 
-		if dateStr == "" || payeeRaw == "" {
+		if dateStr == "" {
+			failedRows = append(failedRows, StagingFailedRow{
+				RowIndex: idx, RawRow: row, Reason: "Missing Date value",
+			})
+			continue
+		}
+		if payeeRaw == "" {
+			failedRows = append(failedRows, StagingFailedRow{
+				RowIndex: idx, RawRow: row, Reason: "Missing Payee/Description value",
+			})
 			continue
 		}
 
 		formattedDate, err := parseDate(dateStr, preset.DateFormat)
 		if err != nil {
+			failedRows = append(failedRows, StagingFailedRow{
+				RowIndex: idx, RawRow: row, Reason: fmt.Sprintf("Invalid date format '%s'", dateStr),
+			})
 			continue
 		}
 
 		amount := parseAmount(row, headerMap, preset)
 		if amount == 0.0 {
+			failedRows = append(failedRows, StagingFailedRow{
+				RowIndex: idx, RawRow: row, Reason: "Amount is 0 or could not be parsed",
+			})
 			continue
 		}
 
-		// Extract Installment numbers ("תשלומים")
+		// Extract Installments
 		currInst, totalInst := parseInstallments(row, headerMap, payeeRaw, preset)
 
-		// Ordinal calculation for import hash
 		ord, err := p.db.GetDailyOccurrenceOrdinal(accountID, formattedDate, amount, payeeRaw)
 		if err != nil {
 			ord = 1
@@ -143,10 +214,25 @@ func (p *CSVParser) ParseCSV(accountID string, rawBytes []byte, preset *models.I
 			CategorizedBy:      models.CategorizedByUnset,
 		}
 
-		parsedTxs = append(parsedTxs, tx)
+		passedTxs = append(passedTxs, tx)
 	}
 
-	return parsedTxs, duplicates, nil
+	return &StagingResult{
+		PassedTransactions: passedTxs,
+		FailedRows:         failedRows,
+		PassedCount:        len(passedTxs),
+		FailedCount:        len(failedRows),
+		DuplicateCount:     duplicateCount,
+	}, nil
+}
+
+// ParseCSV parses raw CSV data into models.Transaction items using the provided ImportPreset
+func (p *CSVParser) ParseCSV(accountID string, rawBytes []byte, preset *models.ImportPreset) ([]models.Transaction, int, error) {
+	staged, err := p.StageCSV(accountID, rawBytes, preset)
+	if err != nil {
+		return nil, 0, err
+	}
+	return staged.PassedTransactions, staged.DuplicateCount, nil
 }
 
 func getColumnValue(row []string, headerMap map[string]int, colName string) string {

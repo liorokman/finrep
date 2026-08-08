@@ -923,66 +923,362 @@ function renderCategoryModal() {
   `;
 }
 
-// ---- Import View ----
+// ---- Import Wizard State ----
+
+let wizardStep = 0; // 0, 1, 3, 4, 5
+let wizardAccountID = '';
+let wizardFile: File | null = null;
+let wizardInspectResult: { columns: string[]; sample_rows: string[][]; total_rows: number } | null = null;
+let wizardMapping = {
+  date_col: '',
+  payee_col: '',
+  amount_mode: 'amount', // 'amount' | 'debit_credit'
+  amount_col: '',
+  debit_col: '',
+  credit_col: '',
+};
+let wizardStagingResult: {
+  passed_transactions: Transaction[];
+  failed_rows: { row_index: number; raw_row: string[]; reason: string }[];
+  passed_count: number;
+  failed_count: number;
+  duplicate_count: number;
+} | null = null;
+let wizardCommitResult: { imported: number; duplicates: number; total: number } | null = null;
 
 function renderImportView() {
-  return `
-    <div class="max-w-2xl mx-auto glass-panel p-8 space-y-6">
-      <h2 class="text-2xl font-bold text-white">Import Statement CSV</h2>
-      <p class="text-xs text-slate-400">Supports Israeli Bank Hapoalim, Max, Isracard CSV exports with Windows-1255 character encoding auto-detection.</p>
+  const steps = [
+    { num: 0, label: '0. Account & File' },
+    { num: 1, label: '1-2. Columns & Mapping' },
+    { num: 3, label: '3. Preview' },
+    { num: 4, label: '4. Staging Validation' },
+    { num: 5, label: '5. Finish' },
+  ];
 
-      ${accountsList.length === 0 ? `
-        <div class="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
-          ⚠️ No accounts found. Please add at least one account before importing.
+  return `
+    <div class="max-w-4xl mx-auto glass-panel p-8 space-y-6">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-4">
+        <div>
+          <h2 class="text-2xl font-bold text-white">Statement CSV Import Wizard</h2>
+          <p class="text-xs text-slate-400 mt-1">Multi-step interactive parser with auto-encoding (UTF-8 / Windows-1255) &amp; validation</p>
+        </div>
+        <button id="btn-reset-wizard" class="text-xs text-slate-400 hover:text-white bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg transition">
+          🔄 Reset Wizard
+        </button>
+      </div>
+
+      <!-- Stepper Progress Indicator -->
+      <div class="grid grid-cols-5 gap-2 border-b border-slate-800 pb-4">
+        ${steps.map(s => {
+          const isCurrent = wizardStep === s.num;
+          const isDone = wizardStep > s.num;
+          return `
+            <div class="flex flex-col items-center gap-1">
+              <div class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${isCurrent ? 'bg-brand-600 text-white shadow-lg shadow-brand-500/30 ring-2 ring-brand-400' : isDone ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-500 border border-slate-800'}">
+                ${isDone ? '✓' : s.num}
+              </div>
+              <span class="text-[10px] font-medium text-center ${isCurrent ? 'text-brand-400 font-bold' : isDone ? 'text-emerald-400' : 'text-slate-500'}">
+                ${s.label}
+              </span>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <!-- STEP 0: Select Account & File -->
+      ${wizardStep === 0 ? `
+        <div class="space-y-6">
+          ${accountsList.length === 0 ? `
+            <div class="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+              ⚠️ No accounts registered yet. Please add at least one account in the Accounts tab before importing statements.
+            </div>
+          ` : ''}
+
+          <div class="space-y-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 mb-1">Target Account</label>
+              <select id="w0-account-id" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-brand-500">
+                ${accountsList.map(a => `<option value="${a.id}" ${wizardAccountID === a.id ? 'selected' : ''}>${a.name} (${a.institution} - ${a.account_type})</option>`).join('')}
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 mb-1">Select Bank or Credit Card CSV File</label>
+              <input type="file" id="w0-file" accept=".csv" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-xs text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-brand-600 file:text-white hover:file:bg-brand-500 cursor-pointer" />
+            </div>
+          </div>
+
+          <div class="flex justify-end pt-4 border-t border-slate-800">
+            <button id="btn-w0-next" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-6 py-2.5 rounded-lg text-xs shadow-lg shadow-brand-500/20 transition flex items-center gap-2">
+              <span>Step 1: Inspect Columns &amp; Load Preview →</span>
+            </button>
+          </div>
         </div>
       ` : ''}
 
-      <form id="form-import" class="space-y-4">
-        <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Target Account</label>
-          <select id="import-account-id" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
-            ${accountsList.map(a => `<option value="${a.id}">${a.name} (${a.institution})</option>`).join('')}
-          </select>
+      <!-- STEP 1 & 2: Show First 10 Lines & Column Mapping -->
+      ${wizardStep === 1 && wizardInspectResult ? `
+        <div class="space-y-6">
+          <div class="p-4 rounded-lg bg-brand-500/10 border border-brand-500/20 space-y-2">
+            <h3 class="text-xs font-bold text-brand-300">Found ${wizardInspectResult.columns.length} columns &amp; ${wizardInspectResult.total_rows} total rows in CSV</h3>
+            <div class="flex flex-wrap gap-1.5">
+              ${wizardInspectResult.columns.map(c => `<span class="px-2 py-0.5 rounded-md bg-slate-900 text-slate-200 border border-slate-700 text-[11px] font-mono">${c}</span>`).join('')}
+            </div>
+          </div>
+
+          <!-- Sample 10 Rows Table -->
+          <div class="space-y-2">
+            <h4 class="text-xs font-bold text-slate-300">First 10 Raw CSV Lines Preview</h4>
+            <div class="overflow-x-auto border border-slate-800 rounded-lg max-h-56">
+              <table class="w-full text-left text-[11px] font-mono">
+                <thead class="bg-slate-900 text-slate-400 border-b border-slate-800 sticky top-0">
+                  <tr>
+                    <th class="py-2 px-3 text-slate-500">#</th>
+                    ${wizardInspectResult.columns.map(c => `<th class="py-2 px-3 whitespace-nowrap">${c}</th>`).join('')}
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/40">
+                  ${wizardInspectResult.sample_rows.map((row, idx) => `
+                    <tr class="hover:bg-slate-900/50">
+                      <td class="py-1.5 px-3 text-slate-500 font-bold">${idx + 1}</td>
+                      ${row.map(cell => `<td class="py-1.5 px-3 whitespace-nowrap text-slate-300">${cell || '-'}</td>`).join('')}
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Column Mapping Form -->
+          <div class="space-y-4 pt-4 border-t border-slate-800">
+            <h4 class="text-xs font-bold text-white uppercase tracking-wider">Map Required CSV Columns</h4>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Date Column *</label>
+                <select id="w1-date-col" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+                  ${wizardInspectResult.columns.map(c => `
+                    <option value="${c}" ${wizardMapping.date_col === c ? 'selected' : ''}>${c}</option>
+                  `).join('')}
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Payee / Merchant Column *</label>
+                <select id="w1-payee-col" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+                  ${wizardInspectResult.columns.map(c => `
+                    <option value="${c}" ${wizardMapping.payee_col === c ? 'selected' : ''}>${c}</option>
+                  `).join('')}
+                </select>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <label class="block text-xs font-semibold text-slate-300">Amount Structure</label>
+              <div class="flex gap-4">
+                <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                  <input type="radio" name="w1-mode" value="amount" ${wizardMapping.amount_mode === 'amount' ? 'checked' : ''} id="radio-mode-single" />
+                  <span>Single Signed Amount Column (e.g. סכום)</span>
+                </label>
+                <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                  <input type="radio" name="w1-mode" value="debit_credit" ${wizardMapping.amount_mode === 'debit_credit' ? 'checked' : ''} id="radio-mode-split" />
+                  <span>Separate Debit &amp; Credit Columns (e.g. חיוב / זיכוי)</span>
+                </label>
+              </div>
+            </div>
+
+            <div id="w1-single-amount-block" class="${wizardMapping.amount_mode === 'amount' ? '' : 'hidden'}">
+              <label class="block text-xs font-semibold text-slate-300 mb-1">Amount Column</label>
+              <select id="w1-amount-col" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+                ${wizardInspectResult.columns.map(c => `
+                  <option value="${c}" ${wizardMapping.amount_col === c ? 'selected' : ''}>${c}</option>
+                `).join('')}
+              </select>
+            </div>
+
+            <div id="w1-split-amount-block" class="grid grid-cols-2 gap-4 ${wizardMapping.amount_mode === 'debit_credit' ? '' : 'hidden'}">
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Debit Column (Expense)</label>
+                <select id="w1-debit-col" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+                  ${wizardInspectResult.columns.map(c => `
+                    <option value="${c}" ${wizardMapping.debit_col === c ? 'selected' : ''}>${c}</option>
+                  `).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-1">Credit Column (Income)</label>
+                <select id="w1-credit-col" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+                  ${wizardInspectResult.columns.map(c => `
+                    <option value="${c}" ${wizardMapping.credit_col === c ? 'selected' : ''}>${c}</option>
+                  `).join('')}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-4 border-t border-slate-800">
+            <button id="btn-w1-back" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-900">
+              ← Back to Step 0
+            </button>
+            <button id="btn-w1-next" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-6 py-2.5 rounded-lg text-xs shadow-lg shadow-brand-500/20 transition">
+              Step 3: Preview Transactions Mapping →
+            </button>
+          </div>
         </div>
+      ` : ''}
 
-        <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Select CSV File</label>
-          <input type="file" id="import-file" accept=".csv" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+      <!-- STEP 3: Preview Mapped Transactions -->
+      ${wizardStep === 3 && wizardStagingResult ? `
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-white">Mapping Preview (${wizardStagingResult.passed_count} transactions parsed)</h3>
+            <span class="text-xs text-emerald-400 font-semibold">✓ Parsed successfully</span>
+          </div>
+
+          <div class="overflow-x-auto border border-slate-800 rounded-lg max-h-80">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-900 text-slate-400 border-b border-slate-800 sticky top-0">
+                <tr>
+                  <th class="py-2.5 px-3">Date</th>
+                  <th class="py-2.5 px-3">Payee / Merchant</th>
+                  <th class="py-2.5 px-3">Installment</th>
+                  <th class="py-2.5 px-3 text-right">Parsed Amount</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/40">
+                ${wizardStagingResult.passed_transactions.slice(0, 15).map(t => `
+                  <tr class="hover:bg-slate-900/50">
+                    <td class="py-2 px-3 text-slate-300 font-mono">${t.date}</td>
+                    <td class="py-2 px-3 font-medium text-white">${t.payee_raw}</td>
+                    <td class="py-2 px-3 text-slate-400">
+                      ${t.current_installment && t.total_installments ? `<span class="bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-0.5 rounded text-[11px]">תשלום ${t.current_installment}/${t.total_installments}</span>` : '-'}
+                    </td>
+                    <td class="py-2 px-3 text-right font-bold font-mono ${t.amount < 0 ? 'text-rose-400' : 'text-emerald-400'}">
+                      ${formatMoney(t.amount)}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+          ${wizardStagingResult.passed_count > 15 ? `<p class="text-xs text-slate-500 text-center">+ ${wizardStagingResult.passed_count - 15} more parsed transactions</p>` : ''}
+
+          <div class="flex items-center justify-between pt-4 border-t border-slate-800">
+            <button id="btn-w3-back" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-900">
+              ← Edit Column Mapping
+            </button>
+            <button id="btn-w3-next" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-6 py-2.5 rounded-lg text-xs shadow-lg shadow-brand-500/20 transition">
+              Step 4: Run Staging Validation →
+            </button>
+          </div>
         </div>
+      ` : ''}
 
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="block text-xs font-medium text-slate-300 mb-1">Date Column Header</label>
-            <input type="text" id="import-date-col" value="תאריך" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+      <!-- STEP 4: Staging Area Breakdown -->
+      ${wizardStep === 4 && wizardStagingResult ? `
+        <div class="space-y-6">
+          <div class="grid grid-cols-2 gap-4">
+            <div class="p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+              <span class="text-xs text-slate-400 uppercase font-semibold">Passed Transactions</span>
+              <h3 class="text-2xl font-extrabold text-emerald-400 mt-1">${wizardStagingResult.passed_count}</h3>
+              <p class="text-[11px] text-emerald-300/80 mt-1">Ready to be saved to database</p>
+            </div>
+            <div class="p-4 rounded-lg bg-rose-500/10 border border-rose-500/20">
+              <span class="text-xs text-slate-400 uppercase font-semibold">Failed / Skipped Rows</span>
+              <h3 class="text-2xl font-extrabold text-rose-400 mt-1">${wizardStagingResult.failed_count}</h3>
+              <p class="text-[11px] text-rose-300/80 mt-1">Invalid dates, 0 amounts, or formatting errors</p>
+            </div>
           </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-300 mb-1">Payee Column Header</label>
-            <input type="text" id="import-payee-col" value="תיאור" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+
+          <!-- Failed Rows Section -->
+          ${wizardStagingResult.failed_count > 0 ? `
+            <div class="space-y-2">
+              <h4 class="text-xs font-bold text-rose-400 flex items-center gap-2">
+                <span>⚠️ Failed Rows Breakdown (${wizardStagingResult.failed_count})</span>
+              </h4>
+              <div class="overflow-x-auto border border-rose-500/20 rounded-lg max-h-48">
+                <table class="w-full text-left text-[11px]">
+                  <thead class="bg-rose-950/40 text-rose-300 border-b border-rose-500/20">
+                    <tr>
+                      <th class="py-2 px-3">Row #</th>
+                      <th class="py-2 px-3">Reason</th>
+                      <th class="py-2 px-3">Raw Content</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-rose-500/10">
+                    ${wizardStagingResult.failed_rows.map(f => `
+                      <tr class="hover:bg-rose-500/5">
+                        <td class="py-1.5 px-3 font-bold text-slate-400 font-mono">${f.row_index}</td>
+                        <td class="py-1.5 px-3 font-semibold text-rose-400 whitespace-nowrap">${f.reason}</td>
+                        <td class="py-1.5 px-3 text-slate-400 font-mono truncate max-w-xs">${f.raw_row.join(' | ')}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Passed Transactions Section -->
+          <div class="space-y-2">
+            <h4 class="text-xs font-bold text-emerald-400">Approved Transactions to Import (${wizardStagingResult.passed_count})</h4>
+            <div class="overflow-x-auto border border-slate-800 rounded-lg max-h-60">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900 text-slate-400 border-b border-slate-800 sticky top-0">
+                  <tr>
+                    <th class="py-2 px-3">Date</th>
+                    <th class="py-2 px-3">Payee</th>
+                    <th class="py-2 px-3 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/40">
+                  ${wizardStagingResult.passed_transactions.map(t => `
+                    <tr class="hover:bg-slate-900/40">
+                      <td class="py-1.5 px-3 text-slate-300 font-mono">${t.date}</td>
+                      <td class="py-1.5 px-3 font-medium text-white">${t.payee_raw}</td>
+                      <td class="py-1.5 px-3 text-right font-bold font-mono ${t.amount < 0 ? 'text-rose-400' : 'text-emerald-400'}">${formatMoney(t.amount)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-4 border-t border-slate-800">
+            <button id="btn-w4-back" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-900">
+              ← Edit Mapping
+            </button>
+            <button id="btn-w4-commit" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-6 py-2.5 rounded-lg text-xs shadow-lg shadow-emerald-500/20 transition flex items-center gap-2">
+              <span>Approve &amp; Import ${wizardStagingResult.passed_count} Transactions 🚀</span>
+            </button>
           </div>
         </div>
+      ` : ''}
 
-        <div class="grid grid-cols-3 gap-3">
-          <div>
-            <label class="block text-xs font-medium text-slate-300 mb-1">Amount Column</label>
-            <input type="text" id="import-amount-col" value="סכום" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+      <!-- STEP 5: Finished -->
+      ${wizardStep === 5 && wizardCommitResult ? `
+        <div class="text-center py-8 space-y-6">
+          <div class="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-3xl mx-auto text-emerald-400">
+            ✓
           </div>
           <div>
-            <label class="block text-xs font-medium text-slate-300 mb-1">Debit Column (opt.)</label>
-            <input type="text" id="import-debit-col" value="" placeholder="e.g. חיוב" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+            <h3 class="text-2xl font-extrabold text-white">Import Complete!</h3>
+            <p class="text-xs text-slate-400 mt-2">
+              Successfully added <span class="text-emerald-400 font-bold">${wizardCommitResult.imported}</span> transactions to the database.
+              ${wizardCommitResult.duplicates > 0 ? `<span class="text-amber-400 font-bold">(${wizardCommitResult.duplicates} duplicate records skipped)</span>` : ''}
+            </p>
           </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-300 mb-1">Credit Column (opt.)</label>
-            <input type="text" id="import-credit-col" value="" placeholder="e.g. זיכוי" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+
+          <div class="flex justify-center gap-4 pt-4 border-t border-slate-800">
+            <button id="btn-w5-view-txs" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-6 py-2.5 rounded-lg text-xs shadow">
+              View Transactions Ledger 💳
+            </button>
+            <button id="btn-w5-again" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-6 py-2.5 rounded-lg text-xs font-medium">
+              Import Another CSV File 📤
+            </button>
           </div>
         </div>
-
-        <div id="import-result" class="hidden p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium"></div>
-        <div id="import-error" class="hidden p-4 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-medium"></div>
-
-        <button type="submit" id="btn-import-submit" class="w-full bg-brand-600 hover:bg-brand-500 text-white font-bold py-2.5 rounded-lg shadow-lg shadow-brand-500/20 text-xs transition">
-          🚀 Upload &amp; Import Transactions
-        </button>
-      </form>
+      ` : ''}
     </div>
   `;
 }
@@ -1287,64 +1583,194 @@ function attachEvents() {
     });
   }
 
-  // ---- CSV Import ----
-  const formImport = document.getElementById('form-import') as HTMLFormElement;
-  if (formImport) {
-    formImport.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const resultDiv = document.getElementById('import-result')!;
-      const errorDiv = document.getElementById('import-error')!;
-      const submitBtn = document.getElementById('btn-import-submit') as HTMLButtonElement;
+  // ---- CSV Import Wizard Event Handlers ----
 
-      resultDiv.classList.add('hidden');
-      errorDiv.classList.add('hidden');
-      submitBtn.disabled = true;
-      submitBtn.textContent = '⏳ Importing...';
+  document.getElementById('btn-reset-wizard')?.addEventListener('click', () => {
+    wizardStep = 0;
+    wizardFile = null;
+    wizardInspectResult = null;
+    wizardStagingResult = null;
+    wizardCommitResult = null;
+    renderApp();
+  });
 
-      try {
-        const fd = new FormData();
-        const accountId = (document.getElementById('import-account-id') as HTMLSelectElement).value;
-        if (!accountId) { showToast('Please select an account', 'error'); return; }
-        fd.append('account_id', accountId);
-        fd.append('date_column', (document.getElementById('import-date-col') as HTMLInputElement).value);
-        fd.append('payee_column', (document.getElementById('import-payee-col') as HTMLInputElement).value);
-        const amountCol = (document.getElementById('import-amount-col') as HTMLInputElement).value;
-        if (amountCol) fd.append('amount_column', amountCol);
-        const debitCol = (document.getElementById('import-debit-col') as HTMLInputElement).value;
-        if (debitCol) fd.append('debit_column', debitCol);
-        const creditCol = (document.getElementById('import-credit-col') as HTMLInputElement).value;
-        if (creditCol) fd.append('credit_column', creditCol);
+  // Step 0: Inspect CSV
+  document.getElementById('btn-w0-next')?.addEventListener('click', async () => {
+    const accSelect = document.getElementById('w0-account-id') as HTMLSelectElement;
+    const fileInput = document.getElementById('w0-file') as HTMLInputElement;
 
-        const fileInput = document.getElementById('import-file') as HTMLInputElement;
-        if (!fileInput.files?.[0]) { showToast('Please select a CSV file', 'error'); return; }
-        fd.append('file', fileInput.files[0]);
+    if (!accSelect?.value) {
+      showToast('Please select a target account', 'error');
+      return;
+    }
+    const file = fileInput?.files?.[0] || wizardFile;
+    if (!file) {
+      showToast('Please select a CSV file to inspect', 'error');
+      return;
+    }
 
-        const res = await fetch('/api/v1/import', { method: 'POST', body: fd });
-        if (res.ok) {
-          const data = await res.json();
-          const msg = `✅ Imported ${data.imported} transactions. ${data.duplicates} duplicates skipped.`;
-          resultDiv.textContent = msg;
-          resultDiv.classList.remove('hidden');
-          showToast(msg, 'success');
-          await loadData();
-        } else {
-          const errJson = await res.json().catch(() => ({}));
-          const errMsg = errJson.error || 'Import failed';
-          errorDiv.textContent = `❌ ${errMsg}`;
-          errorDiv.classList.remove('hidden');
-          showToast(`Import failed: ${errMsg}`, 'error');
-        }
-      } catch (err: any) {
-        const errMsg = `Network error: ${err.message || err}`;
-        errorDiv.textContent = errMsg;
-        errorDiv.classList.remove('hidden');
-        showToast(errMsg, 'error');
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = '🚀 Upload & Import Transactions';
+    wizardAccountID = accSelect.value;
+    wizardFile = file;
+
+    const nextBtn = document.getElementById('btn-w0-next') as HTMLButtonElement;
+    if (nextBtn) { nextBtn.disabled = true; nextBtn.innerText = '⏳ Inspecting CSV...'; }
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/v1/import/inspect', { method: 'POST', body: fd });
+      if (res.ok) {
+        wizardInspectResult = await res.json();
+        const cols = wizardInspectResult?.columns || [];
+
+        // Auto-guess column mappings
+        const findCol = (terms: string[]) => cols.find(c => terms.some(t => c.toLowerCase().includes(t))) || cols[0] || '';
+        wizardMapping.date_col = findCol(['תאריך', 'date']);
+        wizardMapping.payee_col = findCol(['תיאור', 'payee', 'merchant', 'name', 'פרטים']);
+        wizardMapping.amount_col = findCol(['סכום', 'amount', 'total']);
+        wizardMapping.debit_col = findCol(['חיוב', 'debit']);
+        wizardMapping.credit_col = findCol(['זיכוי', 'credit']);
+
+        wizardStep = 1;
+        renderApp();
+        showToast(`Identified ${cols.length} columns & ${wizardInspectResult?.total_rows} rows`, 'success');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Failed to inspect CSV file', 'error');
       }
-    });
-  }
+    } catch {
+      showToast('Network error inspecting CSV file', 'error');
+    } finally {
+      if (nextBtn) { nextBtn.disabled = false; nextBtn.innerText = 'Step 1: Inspect Columns & Load Preview →'; }
+    }
+  });
+
+  // Step 1: Radio Mode Change
+  document.getElementById('radio-mode-single')?.addEventListener('change', () => {
+    wizardMapping.amount_mode = 'amount';
+    document.getElementById('w1-single-amount-block')?.classList.remove('hidden');
+    document.getElementById('w1-split-amount-block')?.classList.add('hidden');
+  });
+
+  document.getElementById('radio-mode-split')?.addEventListener('change', () => {
+    wizardMapping.amount_mode = 'debit_credit';
+    document.getElementById('w1-single-amount-block')?.classList.add('hidden');
+    document.getElementById('w1-split-amount-block')?.classList.remove('hidden');
+  });
+
+  document.getElementById('btn-w1-back')?.addEventListener('click', () => {
+    wizardStep = 0;
+    renderApp();
+  });
+
+  // Step 1 -> Step 3 (Preview)
+  document.getElementById('btn-w1-next')?.addEventListener('click', async () => {
+    if (!wizardFile || !wizardAccountID) return;
+
+    wizardMapping.date_col = (document.getElementById('w1-date-col') as HTMLSelectElement)?.value || wizardMapping.date_col;
+    wizardMapping.payee_col = (document.getElementById('w1-payee-col') as HTMLSelectElement)?.value || wizardMapping.payee_col;
+    if (wizardMapping.amount_mode === 'amount') {
+      wizardMapping.amount_col = (document.getElementById('w1-amount-col') as HTMLSelectElement)?.value || wizardMapping.amount_col;
+    } else {
+      wizardMapping.debit_col = (document.getElementById('w1-debit-col') as HTMLSelectElement)?.value || wizardMapping.debit_col;
+      wizardMapping.credit_col = (document.getElementById('w1-credit-col') as HTMLSelectElement)?.value || wizardMapping.credit_col;
+    }
+
+    const nextBtn = document.getElementById('btn-w1-next') as HTMLButtonElement;
+    if (nextBtn) { nextBtn.disabled = true; nextBtn.innerText = '⏳ Parsing Preview...'; }
+
+    try {
+      const fd = new FormData();
+      fd.append('file', wizardFile);
+      fd.append('account_id', wizardAccountID);
+      fd.append('date_column', wizardMapping.date_col);
+      fd.append('payee_column', wizardMapping.payee_col);
+      if (wizardMapping.amount_mode === 'amount') {
+        fd.append('amount_column', wizardMapping.amount_col);
+      } else {
+        fd.append('debit_column', wizardMapping.debit_col);
+        fd.append('credit_column', wizardMapping.credit_col);
+      }
+
+      const res = await fetch('/api/v1/import/stage', { method: 'POST', body: fd });
+      if (res.ok) {
+        wizardStagingResult = await res.json();
+        wizardStep = 3;
+        renderApp();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Failed to parse CSV preview', 'error');
+      }
+    } catch {
+      showToast('Network error generating preview', 'error');
+    } finally {
+      if (nextBtn) { nextBtn.disabled = false; nextBtn.innerText = 'Step 3: Preview Transactions Mapping →'; }
+    }
+  });
+
+  // Step 3 Back / Next
+  document.getElementById('btn-w3-back')?.addEventListener('click', () => {
+    wizardStep = 1;
+    renderApp();
+  });
+
+  document.getElementById('btn-w3-next')?.addEventListener('click', () => {
+    wizardStep = 4;
+    renderApp();
+  });
+
+  // Step 4 Back / Commit
+  document.getElementById('btn-w4-back')?.addEventListener('click', () => {
+    wizardStep = 1;
+    renderApp();
+  });
+
+  document.getElementById('btn-w4-commit')?.addEventListener('click', async () => {
+    if (!wizardStagingResult || wizardStagingResult.passed_transactions.length === 0) {
+      showToast('No valid transactions to commit', 'error');
+      return;
+    }
+
+    const commitBtn = document.getElementById('btn-w4-commit') as HTMLButtonElement;
+    if (commitBtn) { commitBtn.disabled = true; commitBtn.innerText = '⏳ Saving to Database...'; }
+
+    try {
+      const res = await fetch('/api/v1/import/commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transactions: wizardStagingResult.passed_transactions }),
+      });
+      if (res.ok) {
+        wizardCommitResult = await res.json();
+        wizardStep = 5;
+        await loadData();
+        renderApp();
+        showToast(`Successfully imported ${wizardCommitResult?.imported} transactions`, 'success');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Failed to commit import to database', 'error');
+      }
+    } catch {
+      showToast('Network error committing import', 'error');
+    } finally {
+      if (commitBtn) { commitBtn.disabled = false; }
+    }
+  });
+
+  // Step 5 Finish Buttons
+  document.getElementById('btn-w5-view-txs')?.addEventListener('click', () => {
+    activeTab = 'transactions';
+    renderApp();
+  });
+
+  document.getElementById('btn-w5-again')?.addEventListener('click', () => {
+    wizardStep = 0;
+    wizardFile = null;
+    wizardInspectResult = null;
+    wizardStagingResult = null;
+    wizardCommitResult = null;
+    renderApp();
+  });
 
   // ---- Reconciliation ----
   document.querySelectorAll('.recon-bank-row').forEach(row => {

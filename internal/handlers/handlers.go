@@ -68,6 +68,9 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 
 	// CSV Import & LocalAI
 	api.POST("/import", h.ImportCSV)
+	api.POST("/import/inspect", h.InspectCSV)
+	api.POST("/import/stage", h.StageCSV)
+	api.POST("/import/commit", h.CommitCSV)
 	api.POST("/categorize/localai", h.CategorizeLocalAI)
 
 	// Reconciliation
@@ -333,6 +336,100 @@ func (h *Handler) ImportCSV(c echo.Context) error {
 		"imported":   imported,
 		"duplicates": duplicates,
 		"total":      len(txs),
+	})
+}
+
+func (h *Handler) InspectCSV(c echo.Context) error {
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "CSV file is required"})
+	}
+	src, err := file.Open()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	defer src.Close()
+
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	p := parser.NewCSVParser(h.db)
+	res, err := p.InspectCSV(data)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) StageCSV(c echo.Context) error {
+	accountID := c.FormValue("account_id")
+	if accountID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "account_id is required"})
+	}
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "CSV file is required"})
+	}
+	src, err := file.Open()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	defer src.Close()
+
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	preset := &models.ImportPreset{
+		DateColumn:  c.FormValue("date_column"),
+		PayeeColumn: c.FormValue("payee_column"),
+		HasHeader:   c.FormValue("has_header") != "false",
+	}
+	if debitCol := c.FormValue("debit_column"); debitCol != "" {
+		preset.DebitColumn = &debitCol
+	}
+	if creditCol := c.FormValue("credit_column"); creditCol != "" {
+		preset.CreditColumn = &creditCol
+	}
+	if amountCol := c.FormValue("amount_column"); amountCol != "" {
+		preset.AmountColumn = &amountCol
+	}
+
+	p := parser.NewCSVParser(h.db)
+	res, err := p.StageCSV(accountID, data, preset)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) CommitCSV(c echo.Context) error {
+	var payload struct {
+		Transactions []models.Transaction `json:"transactions"`
+	}
+	if err := c.Bind(&payload); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
+	}
+
+	imported := 0
+	duplicates := 0
+	for _, tx := range payload.Transactions {
+		if err := h.db.CreateTransaction(&tx); err == nil {
+			imported++
+		} else {
+			duplicates++
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"imported":   imported,
+		"duplicates": duplicates,
+		"total":      len(payload.Transactions),
 	})
 }
 
