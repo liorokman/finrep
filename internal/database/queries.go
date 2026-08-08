@@ -369,11 +369,15 @@ func (db *DB) GetUncategorizedOrUnreviewedTransactions(limit int) ([]models.Tran
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
-		WHERE (t.category_id IS NULL OR t.category_id = '' OR t.is_reviewed = 0)
+		WHERE (t.category_id IS NULL OR t.category_id = '' OR c.name_en = 'Uncategorized' OR c.name_he = 'ללא קטגוריה') AND t.is_reviewed = 0
 		ORDER BY t.date DESC
-		LIMIT ?
 	`
-	rows, err := db.Query(query, limit)
+	var args []interface{}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}

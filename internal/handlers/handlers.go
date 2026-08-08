@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -74,6 +73,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.POST("/import/stage", h.StageCSV)
 	api.POST("/import/commit", h.CommitCSV)
 	api.POST("/categorize/localai", h.CategorizeLocalAI)
+	api.GET("/categorize/localai/status", h.GetLocalAIStatus)
 	api.POST("/categorize/localai/test", h.TestLocalAIConnection)
 
 	// Reconciliation
@@ -213,6 +213,13 @@ func (h *Handler) QueryTransactions(c echo.Context) error {
 		}
 	}
 
+	offset := 0
+	if o := c.QueryParam("offset"); o != "" {
+		if val, err := strconv.Atoi(o); err == nil {
+			offset = val
+		}
+	}
+
 	filter := database.TransactionFilter{
 		AccountID:  c.QueryParam("account_id"),
 		CategoryID: c.QueryParam("category_id"),
@@ -221,6 +228,7 @@ func (h *Handler) QueryTransactions(c echo.Context) error {
 		StartDate:  c.QueryParam("start_date"),
 		EndDate:    c.QueryParam("end_date"),
 		Limit:      limit,
+		Offset:     offset,
 	}
 
 	txs, total, err := h.db.QueryTransactions(filter)
@@ -437,34 +445,19 @@ func (h *Handler) CommitCSV(c echo.Context) error {
 }
 
 func (h *Handler) CategorizeLocalAI(c echo.Context) error {
-	slog.Info("CategorizeLocalAI endpoint invoked")
-	txs, err := h.db.GetUncategorizedOrUnreviewedTransactions(50)
+	slog.Info("CategorizeLocalAI endpoint invoked - starting async background worker")
+	status, err := h.localAI.StartBackgroundCategorization()
 	if err != nil {
-		slog.Error("Failed to fetch uncategorized transactions for LocalAI", "error", err)
+		slog.Error("Failed to start background LocalAI categorization", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	slog.Info("Fetched candidate transactions for LocalAI categorization", "count", len(txs))
+	return c.JSON(http.StatusAccepted, status)
+}
 
-	if len(txs) == 0 {
-		slog.Info("No uncategorized or unreviewed transactions found")
-		return c.JSON(http.StatusOK, map[string]string{"status": "No unreviewed transactions to categorize"})
-	}
-
-	processed, err := h.localAI.CategorizeBatch(c.Request().Context(), txs)
-	if err != nil {
-		slog.Error("LocalAI batch categorization failed", "error", err, "processed_so_far", processed)
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("Categorized %d transactions before error: %s", processed, err.Error()),
-		})
-	}
-
-	slog.Info("Successfully completed LocalAI batch categorization", "processed", processed)
-
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"status":    fmt.Sprintf("Categorized %d transactions in 5-item micro-batches", processed),
-		"processed": processed,
-	})
+func (h *Handler) GetLocalAIStatus(c echo.Context) error {
+	status := h.localAI.GetStatus()
+	return c.JSON(http.StatusOK, status)
 }
 
 func (h *Handler) TestLocalAIConnection(c echo.Context) error {

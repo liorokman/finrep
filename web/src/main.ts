@@ -1896,23 +1896,68 @@ function attachEvents() {
   });
 
   // ---- LocalAI Batch ----
+  let localAIPollTimer: any = null;
+
+  const checkLocalAIStatus = async () => {
+    const btn = document.getElementById('btn-trigger-ai');
+    try {
+      const res = await fetch('/api/v1/categorize/localai/status');
+      if (!res.ok) return;
+      const status = await res.json();
+
+      if (status.running) {
+        if (btn) {
+          btn.innerHTML = `⏳ Categorizing (${status.processed}/${status.total})...`;
+          (btn as HTMLButtonElement).disabled = true;
+        }
+      } else {
+        if (localAIPollTimer) {
+          clearInterval(localAIPollTimer);
+          localAIPollTimer = null;
+        }
+        if (btn) {
+          btn.innerHTML = '✨ Run LocalAI';
+          (btn as HTMLButtonElement).disabled = false;
+        }
+        if (status.last_error) {
+          showToast(`LocalAI Stopped: ${status.last_error}`, 'error');
+        } else if (status.total > 0) {
+          showToast(`LocalAI: Finished categorizing ${status.processed} transactions!`, 'success');
+        }
+        await loadData();
+        renderApp();
+      }
+    } catch {
+      // Ignore polling errors
+    }
+  };
+
   document.getElementById('btn-trigger-ai')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-trigger-ai')!;
-    btn.innerHTML = '⏳ Categorizing...';
+    btn.innerHTML = '⏳ Starting...';
     (btn as HTMLButtonElement).disabled = true;
+
     try {
       const res = await fetch('/api/v1/categorize/localai', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        showToast(`LocalAI: ${data.status || 'Categorization complete'}`, 'success');
-        await loadData();
-        renderApp();
+      if (res.ok || res.status === 202) {
+        if (data.total === 0) {
+          showToast('No uncategorized transactions to process', 'info');
+          btn.innerHTML = '✨ Run LocalAI';
+          (btn as HTMLButtonElement).disabled = false;
+          return;
+        }
+        showToast(`LocalAI worker started (${data.total} transactions)`, 'info');
+        if (!localAIPollTimer) {
+          localAIPollTimer = setInterval(checkLocalAIStatus, 2000);
+        }
       } else {
         showToast(`LocalAI Error: ${data.error || res.statusText}`, 'error');
+        btn.innerHTML = '✨ Run LocalAI';
+        (btn as HTMLButtonElement).disabled = false;
       }
     } catch (err: any) {
       showToast(`Error triggering LocalAI: ${err.message || err}`, 'error');
-    } finally {
       btn.innerHTML = '✨ Run LocalAI';
       (btn as HTMLButtonElement).disabled = false;
     }
