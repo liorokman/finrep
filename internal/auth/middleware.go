@@ -20,7 +20,7 @@ const UserContextKey = "user_context"
 func AuthMiddleware(cfg *config.Config) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			path := c.Path()
+			reqPath := c.Request().URL.Path
 
 			// 1. Check session cookie and inject user context if valid
 			cookie, err := c.Cookie("finrep_session")
@@ -47,10 +47,12 @@ func AuthMiddleware(cfg *config.Config) echo.MiddlewareFunc {
 				return next(c)
 			}
 
-			// 2. Bypass auth enforcement for auth endpoints and static routes
-			if path == "/auth/login" || path == "/auth/callback" || path == "/auth/logout" ||
-				path == "/api/v1/auth/login" || path == "/api/v1/auth/callback" || path == "/api/v1/auth/info" ||
-				path == "/login" {
+			// 2. Bypass auth enforcement for auth endpoints, login page, and static assets
+			if reqPath == "/login" ||
+				strings.HasPrefix(reqPath, "/auth/") ||
+				strings.HasPrefix(reqPath, "/assets/") ||
+				reqPath == "/favicon.ico" ||
+				reqPath == "/api/v1/auth/info" {
 				return next(c)
 			}
 
@@ -60,13 +62,13 @@ func AuthMiddleware(cfg *config.Config) echo.MiddlewareFunc {
 			}
 
 			// 4. Unauthenticated request
-			if strings.HasPrefix(path, "/api") {
+			if strings.HasPrefix(reqPath, "/api/") || strings.HasPrefix(c.Path(), "/api/") {
 				return c.JSON(http.StatusUnauthorized, map[string]string{
 					"error": "Authentication required. Please log in via OIDC.",
 				})
 			}
 
-			// For browser page navigation, redirect to /login page
+			// For browser page navigation (e.g. "/"), redirect to /login
 			return c.Redirect(http.StatusFound, "/login")
 		}
 	}

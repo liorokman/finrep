@@ -17,6 +17,11 @@ tasks:
     cmds:
       - go build -o finrep ./cmd/server
 
+  build-ccpdf2csv:
+    desc: Build secondary PDF to CSV converter CLI utility
+    cmds:
+      - go build -o ccpdf2csv ./cmd/ccpdf2csv
+
   dev:
     desc: Run server in dev mode with debug logging and OIDC bypass
     cmds:

@@ -367,7 +367,8 @@ async function loadTransactions() {
 
     const res = await fetch(`/api/v1/transactions?${params.toString()}`);
     if (res.status === 401) {
-      window.location.href = '/auth/login';
+      isUnauthenticated = true;
+      renderApp();
       return;
     }
     if (res.ok) {
@@ -411,7 +412,7 @@ function renderLoginView() {
         </div>
 
         <div class="pt-2">
-          <a id="btn-login-oidc" href="/auth/login" onclick="window.location.href='/auth/login'; return true;" class="w-full inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 text-white font-bold text-sm shadow-xl shadow-brand-500/25 hover:shadow-brand-500/40 transition duration-200 group cursor-pointer">
+          <a id="btn-login-oidc" href="/auth/login" class="w-full inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 text-white font-bold text-sm shadow-xl shadow-brand-500/25 hover:shadow-brand-500/40 transition duration-200 group cursor-pointer">
             <span>🔑 Log in with Single Sign-On (OIDC)</span>
             <span class="text-xs group-hover:translate-x-0.5 transition-transform">→</span>
           </a>

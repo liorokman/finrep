@@ -158,6 +158,13 @@ func HandleLogin(cfg *config.Config) echo.HandlerFunc {
 			return c.Redirect(http.StatusTemporaryRedirect, "/")
 		}
 
+		// If user is already authenticated locally, redirect directly to app root
+		if cookie, err := c.Cookie("finrep_session"); err == nil && cookie.Value != "" {
+			if decodeSession(cookie.Value) != nil {
+				return c.Redirect(http.StatusFound, "/")
+			}
+		}
+
 		verifier, challenge, err := GeneratePKCEPair()
 		if err != nil {
 			return c.String(http.StatusInternalServerError, "Failed to generate PKCE challenge")
@@ -245,6 +252,7 @@ func HandleCallback(cfg *config.Config) echo.HandlerFunc {
 			Path:     "/",
 			HttpOnly: true,
 			MaxAge:   -1,
+			Expires:  time.Unix(0, 0),
 		})
 
 		_, tokenEP, userinfoEP, _ := getOIDCEndpoints(cfg.OIDCIssuer)
@@ -335,6 +343,15 @@ func HandleLogout(cfg *config.Config) echo.HandlerFunc {
 			Path:     "/",
 			HttpOnly: true,
 			MaxAge:   -1,
+			Expires:  time.Unix(0, 0),
+		})
+		c.SetCookie(&http.Cookie{
+			Name:     "finrep_oidc_state",
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   -1,
+			Expires:  time.Unix(0, 0),
 		})
 
 		if cfg != nil && cfg.OIDCEnabled && cfg.OIDCIssuer != "" {
@@ -346,6 +363,13 @@ func HandleLogout(cfg *config.Config) echo.HandlerFunc {
 					if cfg.OIDCClientID != "" {
 						q.Set("client_id", cfg.OIDCClientID)
 					}
+					postLogoutRedirect := "http://localhost:8080/login"
+					if uRed, errRed := url.Parse(cfg.OIDCRedirect); errRed == nil {
+						uRed.Path = "/login"
+						uRed.RawQuery = ""
+						postLogoutRedirect = uRed.String()
+					}
+					q.Set("post_logout_redirect_uri", postLogoutRedirect)
 					u.RawQuery = q.Encode()
 					return c.Redirect(http.StatusFound, u.String())
 				}

@@ -3,9 +3,11 @@ package main
 import (
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -74,11 +76,38 @@ func main() {
 	// Register MCP SSE Transport
 	mcp.RegisterSSERoutes(e, db)
 
-	// Serve Static Frontend Assets (Vite Spa)
+	// Serve Static Frontend Assets with SPA Fallback
 	staticFS, err := fs.Sub(publicFS, "public")
 	if err == nil {
 		assetHandler := http.FileServer(http.FS(staticFS))
-		e.GET("/*", echo.WrapHandler(assetHandler))
+		e.GET("/*", func(c echo.Context) error {
+			reqPath := strings.TrimPrefix(c.Request().URL.Path, "/")
+			if reqPath == "" {
+				reqPath = "index.html"
+			}
+
+			// Check if file exists in static embedded filesystem
+			f, err := staticFS.Open(reqPath)
+			if err == nil {
+				f.Close()
+				assetHandler.ServeHTTP(c.Response(), c.Request())
+				return nil
+			}
+
+			// SPA Fallback: serve index.html for client-side routes (e.g. /login)
+			indexFile, err := staticFS.Open("index.html")
+			if err != nil {
+				return c.String(http.StatusInternalServerError, "index.html not found")
+			}
+			defer indexFile.Close()
+			stat, _ := indexFile.Stat()
+			if seeker, ok := indexFile.(io.ReadSeeker); ok {
+				http.ServeContent(c.Response(), c.Request(), "index.html", stat.ModTime(), seeker)
+				return nil
+			}
+			content, _ := io.ReadAll(indexFile)
+			return c.HTML(http.StatusOK, string(content))
+		})
 	} else {
 		// Fallback for local development when public/ isn't embedded yet
 		e.GET("/", func(c echo.Context) error {

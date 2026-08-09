@@ -68,6 +68,12 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.PUT("/transactions/:id/category", h.UpdateTransactionCategory)
 	api.DELETE("/transactions/:id", h.DeleteTransaction)
 
+	// CSV Import Wizard
+	api.POST("/import", h.ImportCSV)
+	api.POST("/import/inspect", h.InspectCSV)
+	api.POST("/import/stage", h.StageCSV)
+	api.POST("/import/commit", h.CommitCSV)
+
 	// Auto-Categorization
 	api.POST("/categorize/start", h.CategorizeLocalAI)
 	api.POST("/categorize/cancel", h.CancelCategorization)

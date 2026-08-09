@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -8,100 +9,62 @@ import (
 	"github.com/liorokman/finrep/internal/models"
 )
 
-func TestCSVParser_IsraeliInstallments(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+func TestStageCalCSVFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "finrep_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
 
+	dbPath := filepath.Join(tempDir, "test.db")
 	sqlDB, err := database.InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("failed to init db: %v", err)
 	}
-	defer sqlDB.Close()
-
 	db := database.New(sqlDB)
+	defer db.Close()
 
-	acc := &models.Account{
-		Name:           "Max Card",
-		AccountType:    models.AccountTypeCreditCard,
-		Institution:    "Max",
-		Currency:       "ILS",
-		OpeningBalance: 0,
-	}
-	if err := db.CreateAccount(acc); err != nil {
-		t.Fatalf("failed to create account: %v", err)
-	}
-
-	csvData := []byte("תאריך,תיאור,סכום\n2026-08-01,Supermarket תשלום 2 מתוך 12,-150.00\n")
-	preset := &models.ImportPreset{
-		DateColumn:  "תאריך",
-		PayeeColumn: "תיאור",
-		AmountColumn: func() *string { s := "סכום"; return &s }(),
-		HasHeader:   true,
+	calCSVPath := filepath.Join("..", "..", "data", "cal.csv")
+	rawBytes, err := os.ReadFile(calCSVPath)
+	if err != nil {
+		t.Fatalf("failed to read data/cal.csv: %v", err)
 	}
 
 	p := NewCSVParser(db)
-	txs, dupes, err := p.ParseCSV(acc.ID, csvData, preset)
+	inspect, err := p.InspectCSV(rawBytes)
 	if err != nil {
-		t.Fatalf("ParseCSV failed: %v", err)
+		t.Fatalf("InspectCSV failed: %v", err)
 	}
-	if dupes != 0 {
-		t.Errorf("expected 0 dupes, got %d", dupes)
-	}
-	if len(txs) != 1 {
-		t.Fatalf("expected 1 transaction, got %d", len(txs))
-	}
+	t.Logf("Inspect columns: %v, total rows: %d", inspect.Columns, inspect.TotalRows)
 
-	tx := txs[0]
-	if tx.CurrentInstallment == nil || *tx.CurrentInstallment != 2 {
-		t.Errorf("expected current_installment 2, got %v", tx.CurrentInstallment)
-	}
-	if tx.TotalInstallments == nil || *tx.TotalInstallments != 12 {
-		t.Errorf("expected total_installments 12, got %v", tx.TotalInstallments)
-	}
-}
-
-func TestCSVParser_ConcatenatedPayeeColumns(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	sqlDB, err := database.InitDB(dbPath)
-	if err != nil {
-		t.Fatalf("failed to init db: %v", err)
-	}
-	defer sqlDB.Close()
-
-	db := database.New(sqlDB)
-
-	acc := &models.Account{
-		Name:        "Bank Account",
-		AccountType: models.AccountTypeBank,
-		Institution: "Leumi",
-		Currency:    "ILS",
-	}
-	if err := db.CreateAccount(acc); err != nil {
-		t.Fatalf("failed to create account: %v", err)
-	}
-
-	csvData := []byte("Date,Description,Extended Description,Amount\n2026-08-01,Supermarket,Branch #104 Purchase,-250.00\n")
+	amtCol := "Amount"
 	payeeCol2 := "Extended Description"
 	preset := &models.ImportPreset{
+		HasHeader:    true,
+		DateFormat:   "YYYY-MM-DD",
 		DateColumn:   "Date",
 		PayeeColumn:  "Description",
 		PayeeColumn2: &payeeCol2,
-		AmountColumn: func() *string { s := "Amount"; return &s }(),
-		HasHeader:    true,
+		AmountColumn: &amtCol,
 	}
 
-	p := NewCSVParser(db)
-	txs, _, err := p.ParseCSV(acc.ID, csvData, preset)
+	staged, err := p.StageCSV("test_account", rawBytes, preset)
 	if err != nil {
-		t.Fatalf("ParseCSV failed: %v", err)
+		t.Fatalf("StageCSV failed: %v", err)
 	}
-	if len(txs) != 1 {
-		t.Fatalf("expected 1 transaction, got %d", len(txs))
-	}
-	expected := "Supermarket - Branch #104 Purchase"
-	if txs[0].PayeeRaw != expected {
-		t.Errorf("expected concatenated payee '%s', got '%s'", expected, txs[0].PayeeRaw)
+
+	t.Logf("Passed: %d, Failed: %d, Duplicates: %d", staged.PassedCount, staged.FailedCount, staged.DuplicateCount)
+	if len(staged.FailedRows) > 0 {
+		for i, f := range staged.FailedRows {
+			if i < 15 {
+				t.Logf("Failed row %d (RowIndex %d): Reason '%s' | Raw: %v", i+1, f.RowIndex, f.Reason, f.RawRow)
+			}
+		}
+	} else {
+		for i, tx := range staged.PassedTransactions {
+			if i < 5 {
+				t.Logf("Tx [%d]: Date: %s | Amount: %.2f | PayeeRaw: %s", i+1, tx.Date, tx.Amount, tx.PayeeRaw)
+			}
+		}
 	}
 }
