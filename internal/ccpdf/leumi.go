@@ -116,12 +116,6 @@ func (p *LeumiParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			payee = "Bank Leumi Transaction"
 		}
 
-		if p.LocalAI != nil {
-			if fixed, err := p.LocalAI.FixPayeeSpaces(payee); err == nil && fixed != "" {
-				payee = fixed
-			}
-		}
-
 		txs = append(txs, ParsedTransaction{
 			Date:               formattedDate,
 			BillingDate:        currentBillingDate,
@@ -135,6 +129,20 @@ func (p *LeumiParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			CardSuffix:         currentCardSuffix,
 			Provider:           ProviderLeumi,
 		})
+	}
+
+	if p.LocalAI != nil && len(txs) > 0 {
+		payees := make([]string, len(txs))
+		for i, tx := range txs {
+			payees[i] = tx.Payee
+		}
+		if fixedMap, err := p.LocalAI.FixPayeeSpacesBatch(payees); err == nil && len(fixedMap) > 0 {
+			for i := range txs {
+				if fixed, ok := fixedMap[txs[i].Payee]; ok && fixed != "" {
+					txs[i].Payee = fixed
+				}
+			}
+		}
 	}
 
 	return txs, nil

@@ -1579,6 +1579,10 @@ function renderAutoCategorizationView() {
                 <span class="text-slate-400">Model Name</span>
                 <span class="text-slate-200 font-mono">${settingsData['localai_model'] || 'llama-3-8b'}</span>
               </div>
+              <div class="flex justify-between py-1 border-b border-slate-800">
+                <span class="text-slate-400">Batch Size</span>
+                <span class="text-slate-200 font-mono">${settingsData['localai_batch_size'] || '5'} tx / batch</span>
+              </div>
             </div>
             <button id="btn-nav-settings" class="w-full text-center text-xs text-brand-400 hover:text-brand-300 font-medium py-1 transition">
               ⚙️ Change LLM Settings in Settings Tab →
@@ -1756,7 +1760,20 @@ let wizardStagingResult: {
   failed_count: number;
   duplicate_count: number;
 } | null = null;
-let wizardCommitResult: { imported: number; duplicates: number; total: number } | null = null;
+let wizardCommitResult: {
+  imported: number;
+  duplicates: number;
+  total: number;
+  duplicate_records?: Array<{
+    date: string;
+    payee_raw: string;
+    amount: number;
+    currency: string;
+    original_amount?: number;
+    import_hash: string;
+    reason: string;
+  }>;
+} | null = null;
 
 function renderImportView() {
   const steps = [
@@ -2125,6 +2142,42 @@ function renderImportView() {
             </p>
           </div>
 
+          ${wizardCommitResult.duplicate_records && wizardCommitResult.duplicate_records.length > 0 ? `
+            <div class="mt-4 text-left bg-slate-900/80 rounded-xl p-4 border border-amber-500/30 max-w-3xl mx-auto space-y-3 shadow-lg">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                  <span>⚠️ Skipped Duplicate Records (${wizardCommitResult.duplicate_records.length})</span>
+                </span>
+                <span class="text-[10px] text-slate-400">Unique Identity: Account + Date + Amount + Payee</span>
+              </div>
+              <div class="max-h-64 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950">
+                <table class="w-full text-[11px] text-left text-slate-300">
+                  <thead class="bg-slate-900 text-slate-400 font-semibold sticky top-0 border-b border-slate-800">
+                    <tr>
+                      <th class="py-2 px-3">Date</th>
+                      <th class="py-2 px-3">Payee / Description</th>
+                      <th class="py-2 px-3 text-right">Amount</th>
+                      <th class="py-2 px-3">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-800/50">
+                    ${wizardCommitResult.duplicate_records.map(dup => `
+                      <tr class="hover:bg-slate-900/50 transition-colors">
+                        <td class="py-2 px-3 whitespace-nowrap text-slate-400 font-mono">${dup.date}</td>
+                        <td class="py-2 px-3 font-medium text-slate-200">${dup.payee_raw}</td>
+                        <td class="py-2 px-3 text-right font-mono text-amber-300 whitespace-nowrap">
+                          ${dup.amount.toFixed(2)} ${dup.currency}
+                          ${dup.original_amount !== undefined && dup.original_amount !== null && dup.original_amount !== dup.amount ? `<div class="text-[10px] text-slate-500">Orig: ${dup.original_amount.toFixed(2)}</div>` : ''}
+                        </td>
+                        <td class="py-2 px-3 text-slate-400 whitespace-nowrap">${dup.reason}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ` : ''}
+
           <div class="flex justify-center gap-4 pt-4 border-t border-slate-800">
             <button id="btn-w5-view-txs" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-6 py-2.5 rounded-lg text-xs shadow">
               View Transactions Ledger 💳
@@ -2420,6 +2473,8 @@ function renderCycleDetailModal() {
 // ---- Settings View ----
 
 function renderSettingsView() {
+  const currentModel = settingsData['localai_model'] || 'llama-3-8b';
+  const currentBatchSize = settingsData['localai_batch_size'] || '5';
   return `
     <div class="max-w-2xl mx-auto glass-panel p-8 space-y-6">
       <h2 class="text-2xl font-bold text-white">Application &amp; LocalAI Settings</h2>
@@ -2429,13 +2484,32 @@ function renderSettingsView() {
           <label class="block text-xs font-medium text-slate-300 mb-1">LocalAI Endpoint URL</label>
           <input type="text" id="setting-localai-url" value="${settingsData['localai_url'] || 'http://localhost:8080'}" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
         </div>
+
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">LocalAI Model Name</label>
-          <input type="text" id="setting-localai-model" value="${settingsData['localai_model'] || 'llama-3-8b'}" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-xs font-medium text-slate-300">LocalAI Model</label>
+            <button id="btn-fetch-models" type="button" class="text-[11px] text-purple-400 hover:text-purple-300 transition flex items-center gap-1 font-semibold">
+              🔍 Fetch Available Models
+            </button>
+          </div>
+          <div class="space-y-2">
+            <select id="setting-localai-model-select" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500">
+              <option value="${currentModel}">${currentModel} (Current / Default)</option>
+            </select>
+            <input type="text" id="setting-localai-model" value="${currentModel}" placeholder="Or enter custom model name" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+          </div>
+          <p class="text-[10px] text-slate-400 mt-1">Query your LocalAI endpoint for available models or type a custom model ID.</p>
         </div>
+
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">LocalAI API Key (optional)</label>
           <input type="password" id="setting-localai-key" value="${settingsData['localai_api_key'] || ''}" placeholder="Leave blank if not required" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Auto-Categorization Batch Size (Transactions per request)</label>
+          <input type="number" id="setting-localai-batch-size" min="1" max="50" value="${currentBatchSize}" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+          <p class="text-[10px] text-slate-400 mt-1">Controls how many transactions are sent per micro-batch (1 to 50, default: 5).</p>
         </div>
       </div>
 
@@ -3067,20 +3141,80 @@ function attachEvents() {
     });
   });
 
+  // ---- Fetch Available Models ----
+  document.getElementById('btn-fetch-models')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-fetch-models')!;
+    const url = (document.getElementById('setting-localai-url') as HTMLInputElement)?.value;
+    const key = (document.getElementById('setting-localai-key') as HTMLInputElement)?.value;
+    const select = document.getElementById('setting-localai-model-select') as HTMLSelectElement;
+    const modelInput = document.getElementById('setting-localai-model') as HTMLInputElement;
+
+    const originalBtnText = btn.innerHTML;
+    btn.innerHTML = '⏳ Fetching models...';
+    (btn as HTMLButtonElement).disabled = true;
+
+    try {
+      const res = await fetch('/api/v1/categorize/localai/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localai_url: url, localai_api_key: key }),
+      });
+      const data = await res.json();
+      if (res.ok && data.models && Array.isArray(data.models) && data.models.length > 0) {
+        if (select) {
+          select.innerHTML = data.models.map((m: string) => `<option value="${m}">${m}</option>`).join('');
+          if (modelInput) {
+            modelInput.value = data.models[0];
+          }
+        }
+        showToast(`Fetched ${data.models.length} available model(s)`, 'success');
+      } else {
+        showToast(`Could not fetch models: ${data.error || 'No models returned'}`, 'error');
+      }
+    } catch {
+      showToast('Network error fetching models from server', 'error');
+    } finally {
+      btn.innerHTML = originalBtnText;
+      (btn as HTMLButtonElement).disabled = false;
+    }
+  });
+
+  // Sync model dropdown selection to custom model text input
+  document.getElementById('setting-localai-model-select')?.addEventListener('change', (e) => {
+    const selectedVal = (e.target as HTMLSelectElement).value;
+    const modelInput = document.getElementById('setting-localai-model') as HTMLInputElement;
+    if (modelInput) {
+      modelInput.value = selectedVal;
+    }
+  });
+
   // ---- Settings Save ----
   document.getElementById('btn-save-settings')?.addEventListener('click', async () => {
     const url = (document.getElementById('setting-localai-url') as HTMLInputElement).value;
     const model = (document.getElementById('setting-localai-model') as HTMLInputElement).value;
     const key = (document.getElementById('setting-localai-key') as HTMLInputElement).value;
+    const batchSize = (document.getElementById('setting-localai-batch-size') as HTMLInputElement).value || '5';
 
     const res = await fetch('/api/v1/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ localai_url: url, localai_model: model, localai_api_key: key }),
+      body: JSON.stringify({
+        localai_url: url,
+        localai_model: model,
+        localai_api_key: key,
+        localai_batch_size: batchSize,
+      }),
     });
     if (res.ok) {
-      settingsData = { ...settingsData, localai_url: url, localai_model: model, localai_api_key: key };
+      settingsData = {
+        ...settingsData,
+        localai_url: url,
+        localai_model: model,
+        localai_api_key: key,
+        localai_batch_size: batchSize,
+      };
       showToast('Settings saved successfully', 'success');
+      renderApp();
     } else {
       showToast('Failed to save settings', 'error');
     }

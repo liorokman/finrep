@@ -87,6 +87,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.POST("/categorize/localai", h.CategorizeLocalAI)
 	api.GET("/categorize/localai/status", h.GetLocalAIStatus)
 	api.POST("/categorize/localai/test", h.TestLocalAIConnection)
+	api.POST("/categorize/localai/models", h.GetLocalAIModels)
 
 	// Billing Cycles (Reconciliation)
 	api.GET("/billing-cycles", h.GetBillingCycles)
@@ -380,25 +381,66 @@ func (h *Handler) ImportCSV(c echo.Context) error {
 	}
 
 	p := parser.NewCSVParser(h.db)
-	txs, duplicates, err := p.ParseCSV(accountID, data, preset)
+	txs, _, err := p.ParseCSV(accountID, data, preset)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
 	imported := 0
+	duplicates := 0
+	var duplicateRecords []DuplicateRecordInfo
+	seenHashes := make(map[string]bool)
+
 	for _, tx := range txs {
+		if tx.ImportHash != "" && seenHashes[tx.ImportHash] {
+			duplicates++
+			duplicateRecords = append(duplicateRecords, DuplicateRecordInfo{
+				Date:           tx.Date,
+				PayeeRaw:       tx.PayeeRaw,
+				Amount:         tx.Amount,
+				Currency:       tx.Currency,
+				OriginalAmount: tx.OriginalAmount,
+				ImportHash:     tx.ImportHash,
+				Reason:         "Duplicate transaction in file",
+			})
+			continue
+		}
+
 		if err := h.db.CreateTransaction(&tx); err == nil {
 			imported++
+			if tx.ImportHash != "" {
+				seenHashes[tx.ImportHash] = true
+			}
 		} else {
 			duplicates++
+			duplicateRecords = append(duplicateRecords, DuplicateRecordInfo{
+				Date:           tx.Date,
+				PayeeRaw:       tx.PayeeRaw,
+				Amount:         tx.Amount,
+				Currency:       tx.Currency,
+				OriginalAmount: tx.OriginalAmount,
+				ImportHash:     tx.ImportHash,
+				Reason:         "Already exists in database",
+			})
 		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"imported":   imported,
-		"duplicates": duplicates,
-		"total":      len(txs),
+		"imported":          imported,
+		"duplicates":        duplicates,
+		"total":             len(txs),
+		"duplicate_records": duplicateRecords,
 	})
+}
+
+type DuplicateRecordInfo struct {
+	Date           string   `json:"date"`
+	PayeeRaw       string   `json:"payee_raw"`
+	Amount         float64  `json:"amount"`
+	Currency       string   `json:"currency"`
+	OriginalAmount *float64 `json:"original_amount"`
+	ImportHash     string   `json:"import_hash"`
+	Reason         string   `json:"reason"`
 }
 
 func (h *Handler) InspectCSV(c echo.Context) error {
@@ -427,10 +469,6 @@ func (h *Handler) InspectCSV(c echo.Context) error {
 }
 
 func (h *Handler) StageCSV(c echo.Context) error {
-	accountID := c.FormValue("account_id")
-	if accountID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "account_id is required"})
-	}
 	file, err := c.FormFile("file")
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "CSV file is required"})
@@ -446,13 +484,29 @@ func (h *Handler) StageCSV(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	preset := &models.ImportPreset{
-		DateColumn:  c.FormValue("date_column"),
-		PayeeColumn: c.FormValue("payee_column"),
-		HasHeader:   c.FormValue("has_header") != "false",
+	accountID := c.FormValue("account_id")
+	if accountID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "account_id is required"})
 	}
+
+	hasHeader := c.FormValue("has_header") != "false"
+	dateFormat := c.FormValue("date_format")
+	if dateFormat == "" {
+		dateFormat = "YYYY-MM-DD"
+	}
+
+	preset := &models.ImportPreset{
+		HasHeader:  hasHeader,
+		DateFormat: dateFormat,
+		DateColumn: c.FormValue("date_column"),
+		PayeeColumn: c.FormValue("payee_column"),
+	}
+
 	if payeeCol2 := c.FormValue("payee_column_2"); payeeCol2 != "" {
 		preset.PayeeColumn2 = &payeeCol2
+	}
+	if amtCol := c.FormValue("amount_column"); amtCol != "" {
+		preset.AmountColumn = &amtCol
 	}
 	if debitCol := c.FormValue("debit_column"); debitCol != "" {
 		preset.DebitColumn = &debitCol
@@ -460,11 +514,14 @@ func (h *Handler) StageCSV(c echo.Context) error {
 	if creditCol := c.FormValue("credit_column"); creditCol != "" {
 		preset.CreditColumn = &creditCol
 	}
-	if amountCol := c.FormValue("amount_column"); amountCol != "" {
-		preset.AmountColumn = &amountCol
-	}
 	if bDateCol := c.FormValue("billing_date_column"); bDateCol != "" {
 		preset.BillingDateColumn = &bDateCol
+	}
+	if currInstCol := c.FormValue("current_installment_column"); currInstCol != "" {
+		preset.CurrentInstallmentColumn = &currInstCol
+	}
+	if totalInstCol := c.FormValue("total_installments_column"); totalInstCol != "" {
+		preset.TotalInstallmentsColumn = &totalInstCol
 	}
 	if origAmtCol := c.FormValue("original_amount_column"); origAmtCol != "" {
 		preset.OriginalAmountColumn = &origAmtCol
@@ -492,18 +549,48 @@ func (h *Handler) CommitCSV(c echo.Context) error {
 
 	imported := 0
 	duplicates := 0
+	var duplicateRecords []DuplicateRecordInfo
+	seenHashes := make(map[string]bool)
+
 	for _, tx := range payload.Transactions {
+		if tx.ImportHash != "" && seenHashes[tx.ImportHash] {
+			duplicates++
+			duplicateRecords = append(duplicateRecords, DuplicateRecordInfo{
+				Date:           tx.Date,
+				PayeeRaw:       tx.PayeeRaw,
+				Amount:         tx.Amount,
+				Currency:       tx.Currency,
+				OriginalAmount: tx.OriginalAmount,
+				ImportHash:     tx.ImportHash,
+				Reason:         "Duplicate transaction in file",
+			})
+			continue
+		}
+
 		if err := h.db.CreateTransaction(&tx); err == nil {
 			imported++
+			if tx.ImportHash != "" {
+				seenHashes[tx.ImportHash] = true
+			}
 		} else {
 			duplicates++
+			duplicateRecords = append(duplicateRecords, DuplicateRecordInfo{
+				Date:           tx.Date,
+				PayeeRaw:       tx.PayeeRaw,
+				Amount:         tx.Amount,
+				Currency:       tx.Currency,
+				OriginalAmount: tx.OriginalAmount,
+				ImportHash:     tx.ImportHash,
+				Reason:         "Already exists in database",
+			})
 		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"imported":   imported,
-		"duplicates": duplicates,
-		"total":      len(payload.Transactions),
+		"imported":          imported,
+		"duplicates":        duplicates,
+		"total":             len(payload.Transactions),
+		"duplicate_records": duplicateRecords,
 	})
 }
 
@@ -573,6 +660,21 @@ func (h *Handler) TestLocalAIConnection(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": msg})
+}
+
+func (h *Handler) GetLocalAIModels(c echo.Context) error {
+	var body struct {
+		LocalAIURL    string `json:"localai_url"`
+		LocalAIAPIKey string `json:"localai_api_key"`
+	}
+	_ = c.Bind(&body)
+
+	modelsList, err := h.localAI.FetchAvailableModels(c.Request().Context(), body.LocalAIURL, body.LocalAIAPIKey)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{"models": modelsList})
 }
 
 func (h *Handler) GetBillingCycles(c echo.Context) error {

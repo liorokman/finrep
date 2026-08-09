@@ -68,29 +68,30 @@ func main() {
 
 	var allTransactions []ccpdf.ParsedTransaction
 	processedFilesCount := 0
+	totalFiles := len(pdfFiles)
 
-	for _, file := range pdfFiles {
+	for i, file := range pdfFiles {
+		fmt.Fprintf(os.Stderr, "[%d/%d] Processing PDF '%s'...\n", i+1, totalFiles, file)
+
 		pdfData, err := ccpdf.ExtractTextFromPDF(file)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading PDF '%s': %v\n", file, err)
+			fmt.Fprintf(os.Stderr, "  └─ Error reading PDF: %v\n", err)
 			continue
 		}
 
 		parser, err := ccpdf.ResolveParserWithClient(providerClean, pdfData, localAIClient)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error obtaining parser for '%s': %v\n", file, err)
+			fmt.Fprintf(os.Stderr, "  └─ Error obtaining parser: %v\n", err)
 			continue
 		}
 
 		txs, err := parser.Parse(pdfData)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error parsing transactions from '%s': %v\n", file, err)
+			fmt.Fprintf(os.Stderr, "  └─ Error parsing transactions: %v\n", err)
 			continue
 		}
 
-		if *verboseFlag {
-			fmt.Fprintf(os.Stderr, "Processed '%s' using provider %s: %d transactions extracted\n", file, parser.Name(), len(txs))
-		}
+		fmt.Fprintf(os.Stderr, "  └─ Extracted %d transaction(s) using provider %s\n", len(txs), parser.Name())
 
 		allTransactions = append(allTransactions, txs...)
 		processedFilesCount++
@@ -98,6 +99,19 @@ func main() {
 
 	if len(allTransactions) == 0 {
 		fmt.Fprintf(os.Stderr, "Warning: No transactions extracted from %d processed PDF file(s).\n", processedFilesCount)
+	} else if localAIClient != nil {
+		fmt.Fprintf(os.Stderr, "Cleaning merchant payee word spacing using LocalAI...\n")
+		payees := make([]string, len(allTransactions))
+		for i, tx := range allTransactions {
+			payees[i] = tx.Payee
+		}
+		if fixedMap, err := localAIClient.FixPayeeSpacesBatch(payees); err == nil && len(fixedMap) > 0 {
+			for i := range allTransactions {
+				if fixed, ok := fixedMap[allTransactions[i].Payee]; ok && fixed != "" {
+					allTransactions[i].Payee = fixed
+				}
+			}
+		}
 	}
 
 	// Prepare output writer
@@ -112,15 +126,18 @@ func main() {
 		outWriter = f
 	}
 
-	// Write single combined CSV output
+	// Write single combined CSV output (sorted by date and deduplicated)
 	if err := ccpdf.WriteCombinedCSV(outWriter, allTransactions); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing CSV output: %v\n", err)
 		os.Exit(1)
 	}
 
 	if *outFlag != "" {
-		fmt.Fprintf(os.Stderr, "Successfully processed %d PDF file(s). Wrote %d combined transactions to '%s'\n",
+		fmt.Fprintf(os.Stderr, "Done! Successfully processed %d PDF file(s). Wrote %d combined transactions to '%s'\n",
 			processedFilesCount, len(allTransactions), *outFlag)
+	} else {
+		fmt.Fprintf(os.Stderr, "Done! Successfully processed %d PDF file(s). Wrote %d combined transactions to stdout.\n",
+			processedFilesCount, len(allTransactions))
 	}
 }
 

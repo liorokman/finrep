@@ -152,6 +152,7 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 	var passedTxs []models.Transaction
 	var failedRows []StagingFailedRow
 	duplicateCount := 0
+	batchOccurrences := make(map[string]int)
 
 	for idx := startIndex; idx < len(rows); idx++ {
 		row := rows[idx]
@@ -183,10 +184,10 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 			continue
 		}
 
-		amount := parseAmount(row, headerMap, preset)
-		if amount == 0.0 {
+		amount, validAmount := parseAmountAndValid(row, headerMap, preset)
+		if !validAmount {
 			failedRows = append(failedRows, StagingFailedRow{
-				RowIndex: idx, RawRow: row, Reason: "Amount is 0 or could not be parsed",
+				RowIndex: idx, RawRow: row, Reason: "Missing or invalid Amount value",
 			})
 			continue
 		}
@@ -196,8 +197,7 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 		var origCurrency *string
 		if preset.OriginalAmountColumn != nil && *preset.OriginalAmountColumn != "" {
 			if valStr := getColumnValue(row, headerMap, *preset.OriginalAmountColumn); valStr != "" {
-				val := cleanFloat(valStr)
-				if val != 0 {
+				if val, err := parseCleanFloat(valStr); err == nil {
 					origAmount = &val
 				}
 			}
@@ -233,10 +233,14 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 		// Extract Installments
 		currInst, totalInst := parseInstallments(row, headerMap, payeeRaw, preset)
 
-		ord, err := p.db.GetDailyOccurrenceOrdinal(accountID, formattedDate, amount, payeeRaw)
+		dbOrd, err := p.db.GetDailyOccurrenceOrdinal(accountID, formattedDate, amount, payeeRaw)
 		if err != nil {
-			ord = 1
+			dbOrd = 1
 		}
+
+		batchKey := fmt.Sprintf("%s|%s|%.2f|%s", accountID, formattedDate, amount, payeeRaw)
+		batchOccurrences[batchKey]++
+		ord := dbOrd + (batchOccurrences[batchKey] - 1)
 
 		hash := database.GenerateImportHash(accountID, formattedDate, amount, payeeRaw, ord)
 
@@ -333,39 +337,68 @@ func parseDate(s, format string) (string, error) {
 	return "", fmt.Errorf("unrecognized date format: %s", s)
 }
 
-func parseAmount(row []string, headerMap map[string]int, preset *models.ImportPreset) float64 {
-	if preset.AmountColumn != nil && *preset.AmountColumn != "" {
-		valStr := getColumnValue(row, headerMap, *preset.AmountColumn)
-		return cleanFloat(valStr)
-	}
-
-	debitStr := ""
-	creditStr := ""
-	if preset.DebitColumn != nil {
-		debitStr = getColumnValue(row, headerMap, *preset.DebitColumn)
-	}
-	if preset.CreditColumn != nil {
-		creditStr = getColumnValue(row, headerMap, *preset.CreditColumn)
-	}
-
-	debit := cleanFloat(debitStr)
-	credit := cleanFloat(creditStr)
-
-	if debit != 0 {
-		return -mathAbs(debit)
-	}
-	if credit != 0 {
-		return mathAbs(credit)
-	}
-	return 0.0
-}
-
-func cleanFloat(s string) float64 {
+func parseCleanFloat(s string) (float64, error) {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.ReplaceAll(s, "₪", "")
 	s = strings.ReplaceAll(s, "$", "")
-	f, _ := strconv.ParseFloat(s, 64)
+	s = strings.ReplaceAll(s, "€", "")
+	if s == "" {
+		return 0.0, fmt.Errorf("empty string")
+	}
+	return strconv.ParseFloat(s, 64)
+}
+
+func parseAmountAndValid(row []string, headerMap map[string]int, preset *models.ImportPreset) (float64, bool) {
+	if preset.AmountColumn != nil && *preset.AmountColumn != "" {
+		valStr := getColumnValue(row, headerMap, *preset.AmountColumn)
+		val, err := parseCleanFloat(valStr)
+		if err == nil {
+			return val, true
+		}
+	}
+
+	debitStr := ""
+	creditStr := ""
+	if preset.DebitColumn != nil && *preset.DebitColumn != "" {
+		debitStr = getColumnValue(row, headerMap, *preset.DebitColumn)
+	}
+	if preset.CreditColumn != nil && *preset.CreditColumn != "" {
+		creditStr = getColumnValue(row, headerMap, *preset.CreditColumn)
+	}
+
+	if debitStr != "" || creditStr != "" {
+		debit, errD := parseCleanFloat(debitStr)
+		credit, errC := parseCleanFloat(creditStr)
+
+		if errD == nil && debit != 0 {
+			return -mathAbs(debit), true
+		}
+		if errC == nil && credit != 0 {
+			return mathAbs(credit), true
+		}
+		if errD == nil || errC == nil {
+			return 0.0, true
+		}
+	}
+
+	if preset.OriginalAmountColumn != nil && *preset.OriginalAmountColumn != "" {
+		origStr := getColumnValue(row, headerMap, *preset.OriginalAmountColumn)
+		if _, err := parseCleanFloat(origStr); err == nil {
+			return 0.0, true
+		}
+	}
+
+	return 0.0, false
+}
+
+func parseAmount(row []string, headerMap map[string]int, preset *models.ImportPreset) float64 {
+	amt, _ := parseAmountAndValid(row, headerMap, preset)
+	return amt
+}
+
+func cleanFloat(s string) float64 {
+	f, _ := parseCleanFloat(s)
 	return f
 }
 

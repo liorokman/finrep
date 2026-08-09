@@ -8,10 +8,12 @@ import (
 
 // Config represents LocalAI and prompt configuration for ccpdf2csv
 type Config struct {
-	APIURL  string        `json:"api_url"`
-	APIKey  string        `json:"api_key"`
-	Model   string        `json:"model"`
-	Prompts PromptsConfig `json:"prompts"`
+	APIURL              string        `json:"api_url"`
+	APIKey              string        `json:"api_key"`
+	Model               string        `json:"model"`
+	BatchSize           int           `json:"batch_size"`           // Number of payees per LocalAI micro-batch (5 to 15, default: 10)
+	BatchTimeoutSeconds int           `json:"batch_timeout_seconds"` // Timeout per batch request (default: 120)
+	Prompts             PromptsConfig `json:"prompts"`
 }
 
 type PromptsConfig struct {
@@ -22,9 +24,11 @@ type PromptsConfig struct {
 // DefaultConfig returns default configuration values
 func DefaultConfig() *Config {
 	return &Config{
-		APIURL: "http://localhost:8080/v1",
-		APIKey: "sk-localai-key",
-		Model:  "gpt-4o",
+		APIURL:              "http://localhost:8080/v1",
+		APIKey:              "sk-localai-key",
+		Model:               "gpt-4o",
+		BatchSize:           10,
+		BatchTimeoutSeconds: 120,
 		Prompts: PromptsConfig{
 			FixSpacesPrompt:      "You are a Hebrew text correction assistant for credit card statements. Fix missing spaces between Hebrew words in merchant names. Return ONLY a JSON object mapping raw payees to cleaned payees: {\"raw_payee\": \"cleaned payee\"}",
 			ExtractBillingPrompt: "You are a financial statement analyzer. Extract billing dates for credit card statement transactions. Return ONLY JSON.",
@@ -49,6 +53,13 @@ func LoadConfig(path string) (*Config, error) {
 	cfg := DefaultConfig()
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON in '%s': %w", path, err)
+	}
+
+	if cfg.BatchSize < 5 || cfg.BatchSize > 15 {
+		cfg.BatchSize = 10
+	}
+	if cfg.BatchTimeoutSeconds <= 0 {
+		cfg.BatchTimeoutSeconds = 120
 	}
 
 	return cfg, nil

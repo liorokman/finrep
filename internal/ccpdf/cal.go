@@ -62,13 +62,17 @@ func (p *CalParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			continue
 		}
 
-		// Fee line without date (e.g. ₪ 14.50 לידיעה - my cal עמלת טעינה)
-		if strings.Contains(line, "עמלת טעינה") || strings.Contains(line, "my cal") {
+		// Fee line without purchase date (e.g. ₪ 14.50 לידיעה - my cal עמלת טעינה)
+		if (strings.Contains(line, "עמלת טעינה") || strings.Contains(line, "my cal")) && !strings.Contains(line, "טעינת") {
 			amounts := extractCalAmounts(line)
 			if len(amounts) > 0 {
 				amt := -amounts[0]
+				txDate := currentBillingDate
+				if txDate == "" {
+					txDate = time.Now().Format("2006-01-02")
+				}
 				txs = append(txs, ParsedTransaction{
-					Date:               "2026-07-09",
+					Date:               txDate,
 					BillingDate:        currentBillingDate,
 					Payee:              CleanPayeeText("my cal עמלת טעינה"),
 					ExtendedDetail:     CleanExtendedDetail(line),
@@ -133,12 +137,6 @@ func (p *CalParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			payee = "Cal Credit Transaction"
 		}
 
-		if p.LocalAI != nil {
-			if fixed, err := p.LocalAI.FixPayeeSpaces(payee); err == nil && fixed != "" {
-				payee = fixed
-			}
-		}
-
 		extended := CleanExtendedDetail(line)
 
 		// Check if this line is an employer budget reimbursement offset matching a previous transaction on the same date
@@ -175,6 +173,20 @@ func (p *CalParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			CardSuffix:         currentCardSuffix,
 			Provider:           ProviderCal,
 		})
+	}
+
+	if p.LocalAI != nil && len(txs) > 0 {
+		payees := make([]string, len(txs))
+		for i, tx := range txs {
+			payees[i] = tx.Payee
+		}
+		if fixedMap, err := p.LocalAI.FixPayeeSpacesBatch(payees); err == nil && len(fixedMap) > 0 {
+			for i := range txs {
+				if fixed, ok := fixedMap[txs[i].Payee]; ok && fixed != "" {
+					txs[i].Payee = fixed
+				}
+			}
+		}
 	}
 
 	return txs, nil

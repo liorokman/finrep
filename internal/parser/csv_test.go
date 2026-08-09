@@ -68,3 +68,107 @@ func TestStageCalCSVFile(t *testing.T) {
 		}
 	}
 }
+
+func TestZeroAmountRowStaging(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "finrep_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "test.db")
+	sqlDB, err := database.InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	db := database.New(sqlDB)
+	defer db.Close()
+
+	csvContent := `Date,Billing Date,Description,Extended Description,Amount,Currency,Billed Amount,Card Suffix,Provider
+2024-06-28,2024-08-10,Google Pay 7405,Cibus Meal,76.00,ILS,0.00,7405,CAL
+2024-06-29,2024-08-10,Next Online,Shopping,261.00,ILS,0.00,7405,CAL
+`
+
+	p := NewCSVParser(db)
+	billedAmtCol := "Billed Amount"
+	origAmtCol := "Amount"
+	preset := &models.ImportPreset{
+		HasHeader:            true,
+		DateFormat:           "YYYY-MM-DD",
+		DateColumn:           "Date",
+		PayeeColumn:          "Description",
+		AmountColumn:         &billedAmtCol,
+		OriginalAmountColumn: &origAmtCol,
+	}
+
+	staged, err := p.StageCSV("acc_123", []byte(csvContent), preset)
+	if err != nil {
+		t.Fatalf("StageCSV failed: %v", err)
+	}
+
+	if staged.FailedCount != 0 {
+		t.Fatalf("expected 0 failed rows for zero-amount transactions, got %d failed rows (reason: %v)", staged.FailedCount, staged.FailedRows)
+	}
+
+	if staged.PassedCount != 2 {
+		t.Fatalf("expected 2 passed transactions, got %d", staged.PassedCount)
+	}
+
+	if staged.PassedTransactions[0].Amount != 0.0 {
+		t.Errorf("expected amount 0.0, got %f", staged.PassedTransactions[0].Amount)
+	}
+
+	if staged.PassedTransactions[0].OriginalAmount == nil || *staged.PassedTransactions[0].OriginalAmount != 76.0 {
+		t.Errorf("expected original amount 76.0, got %v", staged.PassedTransactions[0].OriginalAmount)
+	}
+}
+
+func TestInBatchDuplicateOrdinals(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "finrep_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "test.db")
+	sqlDB, err := database.InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	db := database.New(sqlDB)
+	defer db.Close()
+
+	// CSV with 3 identical (Date, Payee, Amount) transactions on the same day
+	csvContent := `Date,Description,Amount
+2026-07-09,my cal עמלת טעינה,-2.90
+2026-07-09,my cal עמלת טעינה,-2.90
+2026-07-09,my cal עמלת טעינה,-2.90
+`
+
+	amtCol := "Amount"
+	preset := &models.ImportPreset{
+		HasHeader:    true,
+		DateFormat:   "YYYY-MM-DD",
+		DateColumn:   "Date",
+		PayeeColumn:  "Description",
+		AmountColumn: &amtCol,
+	}
+
+	p := NewCSVParser(db)
+	staged, err := p.StageCSV("acc_dup_test", []byte(csvContent), preset)
+	if err != nil {
+		t.Fatalf("StageCSV failed: %v", err)
+	}
+
+	if staged.PassedCount != 3 {
+		t.Fatalf("expected 3 passed transactions, got %d", staged.PassedCount)
+	}
+
+	h1 := staged.PassedTransactions[0].ImportHash
+	h2 := staged.PassedTransactions[1].ImportHash
+	h3 := staged.PassedTransactions[2].ImportHash
+
+	if h1 == h2 || h2 == h3 || h1 == h3 {
+		t.Fatalf("expected 3 distinct import hashes for identical in-batch rows, got h1=%s, h2=%s, h3=%s", h1, h2, h3)
+	}
+}

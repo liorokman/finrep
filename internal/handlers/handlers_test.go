@@ -195,12 +195,14 @@ func TestImportCalCSVEndToEnd(t *testing.T) {
 		t.Fatalf("Commit failed with HTTP %d: %s", recCommit.Code, recCommit.Body.String())
 	}
 
-	var commitRes map[string]int
+	var commitRes map[string]interface{}
 	if err := json.Unmarshal(recCommit.Body.Bytes(), &commitRes); err != nil {
 		t.Fatalf("failed to unmarshal commit response: %v", err)
 	}
-	t.Logf("Commit result: %+v", commitRes)
-	if commitRes["imported"] != 1113 {
-		t.Fatalf("Expected 1113 imported transactions, got %d", commitRes["imported"])
+	duplicatesCount := int(commitRes["duplicates"].(float64))
+	importedCount := int(commitRes["imported"].(float64))
+	expectedImported := stageRes.PassedCount - duplicatesCount
+	if importedCount != expectedImported {
+		t.Fatalf("Expected %d imported transactions, got %d", expectedImported, importedCount)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -106,6 +107,16 @@ func New(db *database.DB) *LocalAIService {
 	}
 }
 
+func (s *LocalAIService) GetBatchSize() int {
+	val, err := s.db.GetSetting("localai_batch_size")
+	if err == nil && val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n >= 1 && n <= 50 {
+			return n
+		}
+	}
+	return 5
+}
+
 func (s *LocalAIService) GetStatus() CategorizationStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -171,7 +182,7 @@ func (s *LocalAIService) StartBackgroundCategorization() (CategorizationStatus, 
 		return st, nil
 	}
 
-	const chunkSize = 5
+	chunkSize := s.GetBatchSize()
 	numChunks := (len(txs) + chunkSize - 1) / chunkSize
 
 	batches := make([]BatchDetail, numChunks)
@@ -232,7 +243,7 @@ func (s *LocalAIService) runBatchWorker(ctx context.Context, txs []models.Transa
 		endpoint = baseUrl + "/v1/chat/completions"
 	}
 
-	const chunkSize = 5
+	chunkSize := s.GetBatchSize()
 	numChunks := (len(txs) + chunkSize - 1) / chunkSize
 
 	for i := 0; i < len(txs); i += chunkSize {
@@ -657,4 +668,126 @@ func (s *LocalAIService) TestConnection(ctx context.Context, customUrl, customMo
 
 	return fmt.Sprintf("Successfully connected to LocalAI endpoint (%s) using model '%s'", endpoint, model), nil
 }
+
+func (s *LocalAIService) FetchAvailableModels(ctx context.Context, customUrl, customApiKey string) ([]string, error) {
+	url := customUrl
+	if url == "" {
+		url, _ = s.db.GetSetting("localai_url")
+	}
+	if url == "" {
+		url = "http://localhost:8080"
+	}
+
+	apiKey := customApiKey
+	if apiKey == "" {
+		apiKey, _ = s.db.GetSetting("localai_api_key")
+	}
+
+	baseUrl := strings.TrimRight(url, "/")
+	if strings.HasSuffix(baseUrl, "/chat/completions") {
+		baseUrl = strings.TrimSuffix(baseUrl, "/chat/completions")
+	}
+
+	var modelsEndpoint string
+	if strings.HasSuffix(baseUrl, "/v1") {
+		modelsEndpoint = baseUrl + "/models"
+	} else {
+		modelsEndpoint = baseUrl + "/v1/models"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", modelsEndpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("invalid models URL (%s): %w", modelsEndpoint, err)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		// Fallback to Ollama endpoint if /v1/models failed
+		ollamaEndpoint := strings.TrimSuffix(baseUrl, "/v1") + "/api/tags"
+		if reqOllama, oErr := http.NewRequestWithContext(ctx, "GET", ollamaEndpoint, nil); oErr == nil {
+			if apiKey != "" {
+				reqOllama.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+			if respOllama, oDoErr := s.client.Do(reqOllama); oDoErr == nil && respOllama.StatusCode == http.StatusOK {
+				defer respOllama.Body.Close()
+				var ollamaResp struct {
+					Models []struct {
+						Name  string `json:"name"`
+						Model string `json:"model"`
+					} `json:"models"`
+				}
+				if json.NewDecoder(respOllama.Body).Decode(&ollamaResp) == nil && len(ollamaResp.Models) > 0 {
+					var modelIDs []string
+					for _, m := range ollamaResp.Models {
+						name := m.Name
+						if name == "" {
+							name = m.Model
+						}
+						if name != "" {
+							modelIDs = append(modelIDs, name)
+						}
+					}
+					return modelIDs, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("cannot connect to models endpoint at %s: %w", modelsEndpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server at %s returned HTTP %d: %s", modelsEndpoint, resp.StatusCode, string(body))
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response from %s: %w", modelsEndpoint, err)
+	}
+
+	// Try parsing OpenAI standard list response format
+	var openAIResp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(bodyBytes, &openAIResp); err == nil && len(openAIResp.Data) > 0 {
+		var modelIDs []string
+		for _, item := range openAIResp.Data {
+			if item.ID != "" {
+				modelIDs = append(modelIDs, item.ID)
+			}
+		}
+		if len(modelIDs) > 0 {
+			return modelIDs, nil
+		}
+	}
+
+	// Try parsing raw struct/array
+	var arrayResp []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(bodyBytes, &arrayResp); err == nil && len(arrayResp) > 0 {
+		var modelIDs []string
+		for _, item := range arrayResp {
+			id := item.ID
+			if id == "" {
+				id = item.Name
+			}
+			if id != "" {
+				modelIDs = append(modelIDs, id)
+			}
+		}
+		if len(modelIDs) > 0 {
+			return modelIDs, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no models found in response from %s", modelsEndpoint)
+}
+
 
