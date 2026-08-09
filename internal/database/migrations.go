@@ -177,6 +177,55 @@ var migrations = []Migration{
 			('cat-transfers', 'העברות בינעירוניות', 'Internal Transfers', '#64748B', 'repeat', 'TRANSFER');
 		`,
 	},
+	{
+		Version:     3,
+		Description: "Billing cycles: drop account_transfers, add billing cycle tables & transaction billing columns",
+		SQL: `
+		DROP TABLE IF EXISTS account_transfers;
+		DROP INDEX IF EXISTS idx_transfers_bank;
+		DROP INDEX IF EXISTS idx_transfers_cc_unique;
+
+		ALTER TABLE accounts ADD COLUMN billing_day_primary INT DEFAULT NULL;
+		ALTER TABLE accounts ADD COLUMN billing_day_secondary INT DEFAULT NULL;
+
+		ALTER TABLE transactions ADD COLUMN billing_date DATE DEFAULT NULL;
+		ALTER TABLE transactions ADD COLUMN billing_day INT DEFAULT NULL;
+
+		ALTER TABLE import_presets ADD COLUMN billing_date_column TEXT DEFAULT NULL;
+
+		CREATE TABLE IF NOT EXISTS billing_cycles (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			billing_day INT NOT NULL,
+			cycle_start_date DATE NOT NULL,
+			cycle_end_date DATE NOT NULL,
+			expected_bill_date DATE NOT NULL,
+			status TEXT NOT NULL DEFAULT 'OPEN'
+				CHECK(status IN ('OPEN', 'BILLED', 'PAID', 'PARTIAL')),
+			expected_amount DECIMAL(12,2) DEFAULT NULL,
+			bank_transaction_id TEXT DEFAULT NULL,
+			paid_amount DECIMAL(12,2) DEFAULT NULL,
+			notes TEXT,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+			FOREIGN KEY(bank_transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS billing_cycle_transactions (
+			billing_cycle_id TEXT NOT NULL,
+			transaction_id TEXT NOT NULL,
+			PRIMARY KEY(billing_cycle_id, transaction_id),
+			FOREIGN KEY(billing_cycle_id) REFERENCES billing_cycles(id) ON DELETE CASCADE,
+			FOREIGN KEY(transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_billing_cycles_account ON billing_cycles(account_id);
+		CREATE INDEX IF NOT EXISTS idx_billing_cycles_dates ON billing_cycles(cycle_start_date, cycle_end_date);
+		CREATE INDEX IF NOT EXISTS idx_billing_cycles_status ON billing_cycles(status);
+		CREATE INDEX IF NOT EXISTS idx_transactions_billing_date ON transactions(billing_date);
+		`,
+	},
 }
 
 // RunMigrations applies all pending schema DDL migrations

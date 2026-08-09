@@ -191,6 +191,45 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 			continue
 		}
 
+		// Extract Original Amount and Currency if mapped
+		var origAmount *float64
+		var origCurrency *string
+		if preset.OriginalAmountColumn != nil && *preset.OriginalAmountColumn != "" {
+			if valStr := getColumnValue(row, headerMap, *preset.OriginalAmountColumn); valStr != "" {
+				val := cleanFloat(valStr)
+				if val != 0 {
+					origAmount = &val
+				}
+			}
+		}
+		if preset.OriginalCurrencyColumn != nil && *preset.OriginalCurrencyColumn != "" {
+			if currStr := getColumnValue(row, headerMap, *preset.OriginalCurrencyColumn); currStr != "" {
+				origCurrency = &currStr
+			}
+		}
+
+		// Extract Billing Date and Billing Day
+		var billingDate *string
+		var billingDay *int
+		if preset.BillingDateColumn != nil && *preset.BillingDateColumn != "" {
+			if bDateStr := getColumnValue(row, headerMap, *preset.BillingDateColumn); bDateStr != "" {
+				if formattedBDate, err := parseDate(bDateStr, preset.DateFormat); err == nil {
+					billingDate = &formattedBDate
+					if t, err := time.Parse("2006-01-02", formattedBDate); err == nil {
+						day := t.Day()
+						billingDay = &day
+					}
+				}
+			}
+		}
+
+		// Fallback to Account's primary billing day if billingDay is unmapped
+		if billingDay == nil {
+			if acc, err := p.db.GetAccountByID(accountID); err == nil && acc.BillingDayPrimary != nil {
+				billingDay = acc.BillingDayPrimary
+			}
+		}
+
 		// Extract Installments
 		currInst, totalInst := parseInstallments(row, headerMap, payeeRaw, preset)
 
@@ -206,6 +245,10 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 			Date:               formattedDate,
 			Amount:             amount,
 			Currency:           "ILS",
+			OriginalAmount:     origAmount,
+			OriginalCurrency:   origCurrency,
+			BillingDate:        billingDate,
+			BillingDay:         billingDay,
 			PayeeRaw:           payeeRaw,
 			CurrentInstallment: currInst,
 			TotalInstallments:  totalInst,

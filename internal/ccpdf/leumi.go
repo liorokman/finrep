@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-type LeumiParser struct{}
+type LeumiParser struct {
+	LocalAI *LocalAIClient
+}
 
 func (p *LeumiParser) Name() string {
 	return ProviderLeumi
@@ -22,12 +24,24 @@ var (
 func (p *LeumiParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 	var txs []ParsedTransaction
 	currentCardSuffix := ""
+	currentBillingDate := ""
 	inFutureSection := false
 
 	for _, line := range data.Lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
+		}
+
+		// Detect statement or section billing date (e.g. "לתאריך 10/07/26", "בתאריך 10/07/26")
+		if strings.Contains(line, "לתאריך") || strings.Contains(line, "מועד") || strings.Contains(line, "בתאריך") {
+			dateMatches := leumiDateRegex.FindAllString(line, -1)
+			if len(dateMatches) > 0 {
+				parsed := parseLeumiDate(dateMatches[0])
+				if parsed != "" {
+					currentBillingDate = parsed
+				}
+			}
 		}
 
 		if strings.Contains(line, "לכרטיס שמסתיים") || strings.Contains(line, "מסתיים ב") || strings.Contains(line, "לכרטיס") {
@@ -50,9 +64,9 @@ func (p *LeumiParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			continue
 		}
 
-		// Ignore total summary rows
+		// Ignore total summary rows (except billing date section headers processed above)
 		if strings.Contains(line, "סה\"כ") || strings.Contains(line, "כ חיוב לחשבון\"סה") || strings.Contains(line, "כ\"סה") ||
-			strings.Contains(line, "התחייבויות בכרטיס") || strings.Contains(line, "תוקף מסגרת") || strings.Contains(line, "פירוט החיובים בחשבון") ||
+			strings.Contains(line, "התחייבויות בכרטיס") || strings.Contains(line, "תוקף מסגרת") ||
 			strings.Contains(line, "להלן פרוט החיובים") || strings.Contains(line, "הערות/תאריך") {
 			continue
 		}
@@ -68,26 +82,54 @@ func (p *LeumiParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			continue
 		}
 
+		currency := "ILS"
+		if strings.Contains(line, "$") {
+			currency = "USD"
+		} else if strings.Contains(line, "€") {
+			currency = "EUR"
+		}
+
 		amounts := extractLeumiAmounts(line)
 		if len(amounts) == 0 {
 			continue
 		}
-		amount := amounts[0]
-		if amount > 0 {
-			amount = -amount
+
+		var origAmount, billedAmount float64
+		if currency != "ILS" && len(amounts) >= 2 {
+			origAmount = amounts[0]
+			billedAmount = amounts[len(amounts)-1]
+		} else {
+			origAmount = amounts[0]
+			billedAmount = amounts[0]
+		}
+
+		if origAmount > 0 {
+			origAmount = -origAmount
+		}
+		if billedAmount > 0 {
+			billedAmount = -billedAmount
 		}
 
 		payee := cleanLeumiPayee(line, dateMatch)
+		payee = CleanPayeeText(payee)
 		if payee == "" {
 			payee = "Bank Leumi Transaction"
 		}
 
+		if p.LocalAI != nil {
+			if fixed, err := p.LocalAI.FixPayeeSpaces(payee); err == nil && fixed != "" {
+				payee = fixed
+			}
+		}
+
 		txs = append(txs, ParsedTransaction{
 			Date:               formattedDate,
+			BillingDate:        currentBillingDate,
 			Payee:              payee,
-			ExtendedDetail:     line,
-			Amount:             amount,
-			Currency:           "ILS",
+			ExtendedDetail:     CleanExtendedDetail(line),
+			Amount:             origAmount,
+			Currency:           currency,
+			BilledAmount:       billedAmount,
 			CurrentInstallment: 0,
 			TotalInstallments:  0,
 			CardSuffix:         currentCardSuffix,

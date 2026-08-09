@@ -13,10 +13,12 @@ import (
 
 func main() {
 	var (
-		providerFlag = flag.String("provider", "", "Target provider [REQUIRED]: isracard, cal, or leumi")
-		dirFlag      = flag.String("dir", "", "Directory containing PDF statement files to process")
-		outFlag      = flag.String("out", "", "Output CSV file path (defaults to stdout)")
-		verboseFlag  = flag.Bool("verbose", false, "Enable verbose logging")
+		providerFlag  = flag.String("provider", "", "Target provider: isracard, cal, or leumi")
+		dirFlag       = flag.String("dir", "", "Directory containing PDF statement files to process")
+		outFlag       = flag.String("out", "", "Output CSV file path (defaults to stdout)")
+		configFlag    = flag.String("config", "ccpdf.json", "Path to configuration JSON file")
+		genConfigFlag = flag.Bool("generate-config", false, "Generate example ccpdf.json configuration file and exit")
+		verboseFlag   = flag.Bool("verbose", false, "Enable verbose logging")
 	)
 
 	flag.Usage = func() {
@@ -28,12 +30,32 @@ func main() {
 
 	flag.Parse()
 
-	// Require -provider parameter explicitly
+	// Handle -generate-config flag
+	if *genConfigFlag {
+		if err := ccpdf.GenerateExampleConfig(*configFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating configuration file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Example configuration written to '%s'\n", *configFlag)
+		os.Exit(0)
+	}
+
+	// Require -provider parameter explicitly for normal processing
 	providerClean := strings.ToLower(strings.TrimSpace(*providerFlag))
 	if providerClean == "" || (providerClean != "isracard" && providerClean != "cal" && providerClean != "leumi") {
 		fmt.Fprintf(os.Stderr, "Error: -provider flag is REQUIRED and must be one of: isracard, cal, leumi.\n\n")
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	// Load LocalAI configuration if present
+	cfg, err := ccpdf.LoadConfig(*configFlag)
+	if err != nil && *verboseFlag {
+		fmt.Fprintf(os.Stderr, "Notice: Config file '%s' not loaded: %v\n", *configFlag, err)
+	}
+	var localAIClient *ccpdf.LocalAIClient
+	if cfg != nil {
+		localAIClient = ccpdf.NewLocalAIClient(cfg)
 	}
 
 	// Gather target PDF file paths from positional args and -dir flag
@@ -54,7 +76,7 @@ func main() {
 			continue
 		}
 
-		parser, err := ccpdf.ResolveParser(providerClean, pdfData)
+		parser, err := ccpdf.ResolveParserWithClient(providerClean, pdfData, localAIClient)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error obtaining parser for '%s': %v\n", file, err)
 			continue

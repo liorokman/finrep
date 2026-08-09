@@ -1,6 +1,7 @@
 package services
 
 import (
+	"math"
 	"time"
 
 	"github.com/liorokman/finrep/internal/database"
@@ -99,10 +100,10 @@ func (s *ReportService) GetNetWorthTrend(startDate, endDate string) ([]NetWorthP
 
 	var openingAssets, openingLiabilities float64
 	for _, a := range accounts {
-		if a.OpeningBalance >= 0 {
+		if a.AccountType == "BANK" {
 			openingAssets += a.OpeningBalance
-		} else {
-			openingLiabilities += -a.OpeningBalance
+		} else if a.AccountType == "CREDIT_CARD" {
+			openingLiabilities += math.Abs(a.OpeningBalance)
 		}
 	}
 
@@ -151,10 +152,10 @@ func (s *ReportService) GetNetWorthTrend(startDate, endDate string) ([]NetWorthP
 	if len(points) == 0 {
 		var totalAssets, totalLiabilities float64
 		for _, a := range accounts {
-			if a.CurrentBalance >= 0 {
+			if a.AccountType == "BANK" {
 				totalAssets += a.CurrentBalance
-			} else {
-				totalLiabilities += -a.CurrentBalance
+			} else if a.AccountType == "CREDIT_CARD" {
+				totalLiabilities += math.Abs(a.CurrentBalance)
 			}
 		}
 		return []NetWorthPoint{{
@@ -191,6 +192,7 @@ func (s *ReportService) GetCashFlowSummary(accountID, startDate, endDate string)
 		       SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
 		FROM transactions
 		WHERE 1=1
+		  AND id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 	`
 	var args []interface{}
 	if accountID != "" {
@@ -244,6 +246,7 @@ func (s *ReportService) GetCategoryDonut(accountID, startDate, endDate string) (
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 	`
 	var args []interface{}
 	if accountID != "" {
@@ -303,6 +306,7 @@ func (s *ReportService) GetBudgetVsActual(accountID, month string) ([]BudgetVsAc
 		SELECT c.id, c.name_en, COALESCE(c.monthly_budget, 0), COALESCE(SUM(ABS(t.amount)), 0)
 		FROM categories c
 		LEFT JOIN transactions t ON c.id = t.category_id AND t.amount < 0
+		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		  AND strftime('%Y-%m', t.date) = ?
 	`
 	args := []interface{}{month}
@@ -336,6 +340,7 @@ func (s *ReportService) GetSubscriptions(accountID string) ([]SubscriptionItem, 
 		FROM transactions t
 		LEFT JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 	`
 	var args []interface{}
 	if accountID != "" {
@@ -423,6 +428,7 @@ func (s *ReportService) GetAnomalies() ([]AnomalyItem, error) {
 		SELECT id, date, payee_raw, ABS(amount)
 		FROM transactions
 		WHERE ABS(amount) > 1000
+		  AND id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		ORDER BY date DESC
 		LIMIT 10
 	`)
@@ -503,6 +509,7 @@ func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]M
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		  AND strftime('%Y-%m', t.date) >= ?
 		  AND strftime('%Y-%m', t.date) <= ?
 	`
@@ -594,6 +601,7 @@ func (s *ReportService) GetSankeyFlow() ([]SankeyLink, error) {
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		  AND strftime('%Y-%m', t.date) = strftime('%Y-%m', 'now')
 		GROUP BY source, target
 		HAVING value > 0

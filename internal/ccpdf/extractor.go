@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -93,13 +94,24 @@ func extractLinesFromContent(r *pdf.Reader) ([]string, string) {
 			})
 
 			var lineBuilder strings.Builder
-			for _, item := range row {
+			for i, item := range row {
+				if i > 0 {
+					prev := row[i-1]
+					if !strings.HasSuffix(prev.S, " ") && !strings.HasPrefix(item.S, " ") {
+						estimatedPrevWidth := float64(len([]rune(prev.S))) * 3.5
+						gap := item.X - (prev.X + estimatedPrevWidth)
+						if gap > 1.5 {
+							lineBuilder.WriteString(" ")
+						}
+					}
+				}
 				lineBuilder.WriteString(item.S)
 			}
 
 			rawLine := strings.TrimSpace(lineBuilder.String())
 			if rawLine != "" {
 				processedLine := ReverseVisualHebrew(rawLine)
+				processedLine = FixHebrewWordSpacing(processedLine)
 				allLines = append(allLines, processedLine)
 				fullTextBuilder.WriteString(processedLine)
 				fullTextBuilder.WriteString("\n")
@@ -108,6 +120,69 @@ func extractLinesFromContent(r *pdf.Reader) ([]string, string) {
 	}
 
 	return allLines, fullTextBuilder.String()
+}
+
+var hebrewSpaceFixes = []struct {
+	pattern string
+	replace string
+}{
+	{"פלאקסימסעדות", "פלאקסי מסעדות"},
+	{"מסעדותחיוב", "מסעדות חיוב"},
+	{"מזוןומשקא", "מזון ומשקא"},
+	{"תיירותמזהה", "תיירות מזהה"},
+	{"אנרגיהמזהה", "אנרגיה מזהה"},
+	{"מסעדותמזהה", "מסעדות מזהה"},
+	{"רפואהובריהוראת", "רפואה ובריאות הוראת"},
+	{"רפואהוברי", "רפואה ובריאות"},
+	{"תחבורהוראת", "תחבורה הוראת"},
+	{"תקשורתהוראת", "תקשורת הוראת"},
+	{"הוראתקבע", "הוראת קבע"},
+}
+
+// FixHebrewWordSpacing restores missing spaces in concatenated Hebrew credit card category/payee terms
+func FixHebrewWordSpacing(s string) string {
+	for _, fix := range hebrewSpaceFixes {
+		s = strings.ReplaceAll(s, fix.pattern, fix.replace)
+	}
+	return s
+}
+
+var (
+	strayCurrencyRegex = regexp.MustCompile(`(?:^|\s+)[₪$€]+(?:\s+[₪$€]+)*(?:\s+|$)`)
+)
+
+// CleanPayeeText removes stray/duplicated currency symbols, leading/trailing numbers, and tabular artifacts from merchant names
+func CleanPayeeText(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+
+	// Remove standalone currency symbols like "₪ ₪", "₪", "$", "€"
+	s = strayCurrencyRegex.ReplaceAllString(s, " ")
+
+	// Trim leading/trailing punctuation and whitespace
+	s = strings.TrimFunc(s, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '₪' || r == '$' || r == '€' || r == '-' || r == ':' || r == '.' || r == ','
+	})
+
+	// Normalize multiple spaces into single space
+	fields := strings.Fields(s)
+	return strings.Join(fields, " ")
+}
+
+// CleanExtendedDetail cleans extended description text by removing stray currency symbols and tabular junk
+func CleanExtendedDetail(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+
+	// Remove standalone currency symbols
+	s = strayCurrencyRegex.ReplaceAllString(s, " ")
+
+	fields := strings.Fields(s)
+	return strings.Join(fields, " ")
 }
 
 // ReverseVisualHebrew reverses contiguous blocks of RTL Hebrew characters to restore human-readable word order

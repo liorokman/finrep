@@ -18,20 +18,20 @@ import (
 )
 
 type Handler struct {
-	db        *database.DB
-	cfg       *config.Config
-	localAI   *localai.LocalAIService
-	reconSvc  *services.ReconciliationService
-	reportSvc *services.ReportService
+	db         *database.DB
+	cfg        *config.Config
+	localAI    *localai.LocalAIService
+	billingSvc *services.BillingService
+	reportSvc  *services.ReportService
 }
 
 func New(db *database.DB, cfg *config.Config) *Handler {
 	return &Handler{
-		db:        db,
-		cfg:       cfg,
-		localAI:   localai.New(db),
-		reconSvc:  services.NewReconciliationService(db),
-		reportSvc: services.NewReportService(db),
+		db:         db,
+		cfg:        cfg,
+		localAI:    localai.New(db),
+		billingSvc: services.NewBillingService(db),
+		reportSvc:  services.NewReportService(db),
 	}
 }
 
@@ -54,6 +54,7 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.GET("/accounts", h.GetAccounts)
 	api.POST("/accounts", h.CreateAccount)
 	api.GET("/accounts/:id", h.GetAccountByID)
+	api.PUT("/accounts/:id", h.UpdateAccount)
 	api.DELETE("/accounts/:id", h.DeleteAccount)
 
 	// Categories
@@ -87,9 +88,15 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.GET("/categorize/localai/status", h.GetLocalAIStatus)
 	api.POST("/categorize/localai/test", h.TestLocalAIConnection)
 
-	// Reconciliation
-	api.GET("/reconciliation/candidates", h.GetReconciliationCandidates)
-	api.POST("/reconciliation/link", h.ReconcileLumpSum)
+	// Billing Cycles (Reconciliation)
+	api.GET("/billing-cycles", h.GetBillingCycles)
+	api.POST("/billing-cycles/generate", h.GenerateBillingCycles)
+	api.GET("/billing-cycles/:id", h.GetBillingCycleDetail)
+	api.POST("/billing-cycles/:id/auto-populate", h.AutoPopulateCycle)
+	api.GET("/billing-cycles/:id/bank-candidates", h.GetBankPaymentCandidates)
+	api.POST("/billing-cycles/:id/reconcile", h.ReconcileCycle)
+	api.POST("/billing-cycles/:id/unlink", h.UnlinkCycle)
+	api.DELETE("/billing-cycles/:id", h.DeleteBillingCycle)
 
 	// Reports
 	api.GET("/reports/net-worth", h.GetNetWorthReport)
@@ -147,6 +154,18 @@ func (h *Handler) GetAccountByID(c echo.Context) error {
 	acc, err := h.db.GetAccountByID(id)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Account not found"})
+	}
+	return c.JSON(http.StatusOK, acc)
+}
+
+func (h *Handler) UpdateAccount(c echo.Context) error {
+	id := c.Param("id")
+	var acc models.Account
+	if err := c.Bind(&acc); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid payload"})
+	}
+	if err := h.db.UpdateAccount(id, &acc); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, acc)
 }
@@ -350,6 +369,15 @@ func (h *Handler) ImportCSV(c echo.Context) error {
 	if amountCol := c.FormValue("amount_column"); amountCol != "" {
 		preset.AmountColumn = &amountCol
 	}
+	if bDateCol := c.FormValue("billing_date_column"); bDateCol != "" {
+		preset.BillingDateColumn = &bDateCol
+	}
+	if origAmtCol := c.FormValue("original_amount_column"); origAmtCol != "" {
+		preset.OriginalAmountColumn = &origAmtCol
+	}
+	if origCurrCol := c.FormValue("original_currency_column"); origCurrCol != "" {
+		preset.OriginalCurrencyColumn = &origCurrCol
+	}
 
 	p := parser.NewCSVParser(h.db)
 	txs, duplicates, err := p.ParseCSV(accountID, data, preset)
@@ -434,6 +462,15 @@ func (h *Handler) StageCSV(c echo.Context) error {
 	}
 	if amountCol := c.FormValue("amount_column"); amountCol != "" {
 		preset.AmountColumn = &amountCol
+	}
+	if bDateCol := c.FormValue("billing_date_column"); bDateCol != "" {
+		preset.BillingDateColumn = &bDateCol
+	}
+	if origAmtCol := c.FormValue("original_amount_column"); origAmtCol != "" {
+		preset.OriginalAmountColumn = &origAmtCol
+	}
+	if origCurrCol := c.FormValue("original_currency_column"); origCurrCol != "" {
+		preset.OriginalCurrencyColumn = &origCurrCol
 	}
 
 	p := parser.NewCSVParser(h.db)
@@ -538,34 +575,119 @@ func (h *Handler) TestLocalAIConnection(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": msg})
 }
 
-func (h *Handler) GetReconciliationCandidates(c echo.Context) error {
-	bankTxID := c.QueryParam("bank_transaction_id")
-	if bankTxID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bank_transaction_id is required"})
-	}
-	res, err := h.reconSvc.FindReconciliationCandidates(bankTxID)
+func (h *Handler) GetBillingCycles(c echo.Context) error {
+	accountID := c.QueryParam("account_id")
+	status := c.QueryParam("status")
+	cycles, err := h.db.GetBillingCycles(accountID, status)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, res)
+	if cycles == nil {
+		cycles = []models.BillingCycle{}
+	}
+	return c.JSON(http.StatusOK, cycles)
 }
 
-type ReconcileLinkRequest struct {
-	BankTransactionID       string   `json:"bank_transaction_id"`
-	CreditCardTransactionIDs []string `json:"credit_card_transaction_ids"`
+type GenerateCyclesRequest struct {
+	AccountID string `json:"account_id"`
+	FromMonth string `json:"from_month"`
+	ToMonth   string `json:"to_month"`
 }
 
-func (h *Handler) ReconcileLumpSum(c echo.Context) error {
-	var req ReconcileLinkRequest
-	if err := c.Bind(&req); err != nil || req.BankTransactionID == "" || len(req.CreditCardTransactionIDs) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid bank or CC transaction IDs"})
+func (h *Handler) GenerateBillingCycles(c echo.Context) error {
+	var req GenerateCyclesRequest
+	if err := c.Bind(&req); err != nil || req.AccountID == "" || req.FromMonth == "" || req.ToMonth == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "account_id, from_month, and to_month are required"})
 	}
 
-	if err := h.reconSvc.ReconcileLumpSum(req.BankTransactionID, req.CreditCardTransactionIDs); err != nil {
+	cycles, err := h.billingSvc.GenerateCycles(req.AccountID, req.FromMonth, req.ToMonth)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusCreated, cycles)
+}
+
+func (h *Handler) GetBillingCycleDetail(c echo.Context) error {
+	id := c.Param("id")
+	cycle, err := h.db.GetBillingCycleByID(id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Billing cycle not found"})
+	}
+
+	txs, err := h.db.GetCycleTransactions(id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if txs == nil {
+		txs = []models.Transaction{}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"billing_cycle": cycle,
+		"transactions":  txs,
+	})
+}
+
+func (h *Handler) AutoPopulateCycle(c echo.Context) error {
+	id := c.Param("id")
+	count, err := h.billingSvc.AutoPopulateCycle(id)
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	return c.JSON(http.StatusOK, map[string]string{"status": "reconciled"})
+	cycle, _ := h.db.GetBillingCycleByID(id)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"assigned_count": count,
+		"billing_cycle":  cycle,
+	})
+}
+
+func (h *Handler) GetBankPaymentCandidates(c echo.Context) error {
+	id := c.Param("id")
+	candidates, err := h.billingSvc.FindBankPaymentCandidates(id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if candidates == nil {
+		candidates = []models.Transaction{}
+	}
+	return c.JSON(http.StatusOK, candidates)
+}
+
+type ReconcileCycleRequest struct {
+	BankTransactionID string `json:"bank_transaction_id"`
+}
+
+func (h *Handler) ReconcileCycle(c echo.Context) error {
+	id := c.Param("id")
+	var req ReconcileCycleRequest
+	if err := c.Bind(&req); err != nil || req.BankTransactionID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bank_transaction_id is required"})
+	}
+
+	if err := h.billingSvc.ReconcileCycle(id, req.BankTransactionID); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	cycle, _ := h.db.GetBillingCycleByID(id)
+	return c.JSON(http.StatusOK, cycle)
+}
+
+func (h *Handler) UnlinkCycle(c echo.Context) error {
+	id := c.Param("id")
+	if err := h.billingSvc.UnlinkCycle(id); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	cycle, _ := h.db.GetBillingCycleByID(id)
+	return c.JSON(http.StatusOK, cycle)
+}
+
+func (h *Handler) DeleteBillingCycle(c echo.Context) error {
+	id := c.Param("id")
+	if err := h.db.DeleteBillingCycle(id); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (h *Handler) GetNetWorthReport(c echo.Context) error {

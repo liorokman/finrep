@@ -28,8 +28,8 @@ func SortAndDeduplicateTransactions(txs []ParsedTransaction) []ParsedTransaction
 	seen := make(map[string]bool)
 
 	for _, tx := range txs {
-		key := fmt.Sprintf("%s|%s|%.2f|%s|%s|%d|%d|%s",
-			tx.Date, tx.Payee, tx.Amount, tx.Currency, tx.ExtendedDetail, tx.CurrentInstallment, tx.TotalInstallments, tx.CardSuffix)
+		key := fmt.Sprintf("%s|%s|%s|%.2f|%s|%.2f|%s|%d|%d|%s",
+			tx.Date, tx.BillingDate, tx.Payee, tx.Amount, tx.Currency, tx.BilledAmount, tx.ExtendedDetail, tx.CurrentInstallment, tx.TotalInstallments, tx.CardSuffix)
 		if !seen[key] {
 			seen[key] = true
 			unique = append(unique, tx)
@@ -48,10 +48,12 @@ func WriteCombinedCSV(w io.Writer, txs []ParsedTransaction) error {
 
 	header := []string{
 		"Date",
+		"Billing Date",
 		"Description",
 		"Extended Description",
 		"Amount",
 		"Currency",
+		"Billed Amount",
 		"Card Suffix",
 		"Provider",
 	}
@@ -62,10 +64,12 @@ func WriteCombinedCSV(w io.Writer, txs []ParsedTransaction) error {
 	for _, tx := range processed {
 		record := []string{
 			tx.Date,
+			tx.BillingDate,
 			tx.Payee,
 			tx.ExtendedDetail,
 			strconv.FormatFloat(tx.Amount, 'f', 2, 64),
 			tx.Currency,
+			strconv.FormatFloat(tx.BilledAmount, 'f', 2, 64),
 			tx.CardSuffix,
 			tx.Provider,
 		}

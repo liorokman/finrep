@@ -17,6 +17,8 @@ interface Account {
   opening_balance: number;
   current_balance?: number;
   credit_limit?: number;
+  billing_day_primary?: number;
+  billing_day_secondary?: number;
 }
 
 interface Transaction {
@@ -36,6 +38,10 @@ interface Transaction {
   current_installment?: number;
   total_installments?: number;
   is_reviewed: boolean;
+  billing_date?: string;
+  billing_day?: number;
+  original_amount?: number;
+  original_currency?: string;
 }
 
 interface Category {
@@ -234,10 +240,33 @@ let showAddAccountModal = false;
 let showAddCategoryModal = false;
 let editingCategory: Category | null = null;
 
-// Reconciliation state
-let reconBankTx: Transaction | null = null;
-let reconCandidates: Transaction[] = [];
-let reconSelectedIDs: Set<string> = new Set();
+interface BillingCycle {
+  id: string;
+  account_id: string;
+  account_name?: string;
+  billing_day: number;
+  cycle_start_date: string;
+  cycle_end_date: string;
+  expected_bill_date: string;
+  status: 'OPEN' | 'BILLED' | 'PAID' | 'PARTIAL';
+  expected_amount: number;
+  bank_transaction_id?: string;
+  paid_amount: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// Billing Cycle state
+let billingCyclesList: BillingCycle[] = [];
+let selectedCycleAccountID: string = '';
+let selectedCycleStatusFilter: string = '';
+let activeCycleDetail: { billing_cycle: BillingCycle; transactions: Transaction[] } | null = null;
+let cycleBankCandidates: Transaction[] = [];
+let selectedCandidateID: string = '';
+let showGenerateCyclesModal: boolean = false;
+let generateFromMonth: string = '';
+let generateToMonth: string = '';
+let generateAccountID: string = '';
 
 // ---- Utilities ----
 
@@ -347,8 +376,23 @@ async function loadData() {
     if (statusRes && statusRes.ok) {
       categorizationStatus = await statusRes.json();
     }
+    await fetchBillingCycles();
   } catch (e) {
     console.error('Failed to fetch data from API server', e);
+  }
+}
+
+async function fetchBillingCycles() {
+  try {
+    const params = new URLSearchParams();
+    if (selectedCycleAccountID) params.set('account_id', selectedCycleAccountID);
+    if (selectedCycleStatusFilter) params.set('status', selectedCycleStatusFilter);
+    const res = await fetch(`/api/v1/billing-cycles?${params.toString()}`);
+    if (res.ok) {
+      billingCyclesList = (await res.json()) || [];
+    }
+  } catch (e) {
+    console.error('Failed to fetch billing cycles', e);
   }
 }
 
@@ -505,7 +549,7 @@ function renderApp() {
         ${activeTab === 'categories' ? renderCategoriesView() : ''}
         ${activeTab === 'autocat' ? renderAutoCategorizationView() : ''}
         ${activeTab === 'import' ? renderImportView() : ''}
-        ${activeTab === 'reconciliation' ? renderReconciliationView() : ''}
+        ${activeTab === 'reconciliation' ? renderBillingCyclesView() : ''}
         ${activeTab === 'settings' ? renderSettingsView() : ''}
       `}
     </main>
@@ -995,6 +1039,17 @@ function renderAccountModal() {
             <div>
               <label class="block text-xs font-medium text-slate-300 mb-1">Opening Balance</label>
               <input type="number" step="0.01" id="acc-balance" value="0.00" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+            </div>
+          </div>
+
+          <div id="acc-cc-billing-block" class="grid grid-cols-2 gap-3 p-3 rounded-lg bg-brand-500/10 border border-brand-500/20">
+            <div>
+              <label class="block text-xs font-semibold text-brand-300 mb-1">Primary Billing Day (1-31)</label>
+              <input type="number" min="1" max="31" id="acc-billing-primary" value="10" placeholder="e.g. 10" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 mb-1">Secondary Day (Optional)</label>
+              <input type="number" min="1" max="31" id="acc-billing-secondary" placeholder="e.g. 2" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
             </div>
           </div>
 
@@ -1690,6 +1745,9 @@ let wizardMapping = {
   amount_col: '',
   debit_col: '',
   credit_col: '',
+  billing_date_col: '',
+  original_amount_col: '',
+  original_currency_col: '',
 };
 let wizardStagingResult: {
   passed_transactions: Transaction[];
@@ -1878,6 +1936,40 @@ function renderImportView() {
                 </select>
               </div>
             </div>
+
+            <!-- Optional Credit Card Specific Mappings -->
+            <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 space-y-3">
+              <h5 class="text-[11px] font-bold text-brand-300 uppercase tracking-wider">Credit Card Statement Fields (Optional)</h5>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label class="block text-[11px] font-medium text-slate-400 mb-1">Billing Date Column</label>
+                  <select id="w1-billing-date-col" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white">
+                    <option value="">(None - Default to cycle day)</option>
+                    ${wizardInspectResult.columns.map(c => `
+                      <option value="${c}" ${wizardMapping.billing_date_col === c ? 'selected' : ''}>${c}</option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-medium text-slate-400 mb-1">Original Amount Column</label>
+                  <select id="w1-orig-amount-col" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white">
+                    <option value="">(None)</option>
+                    ${wizardInspectResult.columns.map(c => `
+                      <option value="${c}" ${wizardMapping.original_amount_col === c ? 'selected' : ''}>${c}</option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-medium text-slate-400 mb-1">Original Currency Column</label>
+                  <select id="w1-orig-currency-col" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white">
+                    <option value="">(None)</option>
+                    ${wizardInspectResult.columns.map(c => `
+                      <option value="${c}" ${wizardMapping.original_currency_col === c ? 'selected' : ''}>${c}</option>
+                    `).join('')}
+                  </select>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="flex items-center justify-between pt-4 border-t border-slate-800">
@@ -2047,95 +2139,278 @@ function renderImportView() {
   `;
 }
 
-// ---- Reconciliation View ----
+// ---- Billing Cycles View ----
 
-function renderReconciliationView() {
-  const bankDebits = transactionsList.filter(t => {
-    const acc = accountsList.find(a => a.id === t.account_id);
-    return acc?.account_type === 'BANK' && t.amount < 0;
-  });
-
-  const reconTotal = reconCandidates
-    .filter(c => reconSelectedIDs.has(c.id))
-    .reduce((sum, c) => sum + Math.abs(c.amount), 0);
-
-  const bankDebitAmt = reconBankTx ? Math.abs(reconBankTx.amount) : 0;
-  const diff = bankDebitAmt - reconTotal;
+function renderBillingCyclesView() {
+  const ccAccounts = accountsList.filter(a => a.account_type === 'CREDIT_CARD');
 
   return `
     <div class="space-y-6">
-      <div>
-        <h2 class="text-2xl font-bold text-white">Statement Payment Reconciliation</h2>
-        <p class="text-xs text-slate-400 mt-1">Match a single Bank lump-sum debit against individual Credit Card transactions.</p>
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h2 class="text-2xl font-bold text-white">🔗 Credit Card Billing Cycles</h2>
+          <p class="text-xs text-slate-400 mt-1">Group credit card transactions into billing cycles, monitor expected billing amounts, and match bank payments.</p>
+        </div>
+        <button id="btn-open-generate-modal" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-lg shadow-brand-500/20 transition flex items-center gap-1.5 self-start sm:self-auto">
+          <span>⚡ Generate Billing Cycles</span>
+        </button>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- Step 1: Select Bank Debit -->
-        <div class="glass-panel p-6 space-y-4">
-          <h3 class="text-sm font-bold text-white">Step 1: Select Bank Debit</h3>
-          ${bankDebits.length === 0 ? `
-            <p class="text-xs text-slate-500">No bank debit transactions found. Import bank account CSV first.</p>
-          ` : `
-            <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
-              ${bankDebits.map(t => `
-                <div class="p-3 rounded-lg border cursor-pointer transition ${reconBankTx?.id === t.id ? 'border-brand-500 bg-brand-500/10' : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'}
-                     recon-bank-row" data-txid="${t.id}">
-                  <div class="flex items-center justify-between">
-                    <span class="text-xs font-medium text-white truncate max-w-[180px]">${t.payee_raw}</span>
-                    <span class="text-xs font-bold text-rose-400 font-mono">${formatMoney(t.amount)}</span>
-                  </div>
-                  <span class="text-xs text-slate-400">${t.date} &bull; ${t.account_name}</span>
-                </div>
-              `).join('')}
-            </div>
-          `}
+      <!-- Filters & Stats Bar -->
+      <div class="glass-panel p-4 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <div>
+            <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Credit Card Account</label>
+            <select id="cycle-account-filter" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white">
+              <option value="">All CC Accounts</option>
+              ${ccAccounts.map(a => `<option value="${a.id}" ${selectedCycleAccountID === a.id ? 'selected' : ''}>${a.name}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Status Filter</label>
+            <select id="cycle-status-filter" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white">
+              <option value="">All Statuses</option>
+              <option value="OPEN" ${selectedCycleStatusFilter === 'OPEN' ? 'selected' : ''}>OPEN</option>
+              <option value="BILLED" ${selectedCycleStatusFilter === 'BILLED' ? 'selected' : ''}>BILLED</option>
+              <option value="PAID" ${selectedCycleStatusFilter === 'PAID' ? 'selected' : ''}>PAID</option>
+              <option value="PARTIAL" ${selectedCycleStatusFilter === 'PARTIAL' ? 'selected' : ''}>PARTIAL</option>
+            </select>
+          </div>
         </div>
 
-        <!-- Step 2: CC Candidates -->
-        <div class="glass-panel p-6 space-y-4">
-          <h3 class="text-sm font-bold text-white">Step 2: Match Credit Card Charges</h3>
-          ${!reconBankTx ? `
-            <p class="text-xs text-slate-500">← Select a bank debit on the left to see matching CC candidates.</p>
-          ` : reconCandidates.length === 0 ? `
-            <div class="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs">
-              No CC candidates found for this debit. The heuristic searches for CC charges within ±3 days that sum close to the bank debit amount.
+        <div class="text-xs text-slate-400">
+          Showing <span class="font-bold text-white">${billingCyclesList.length}</span> billing cycles
+        </div>
+      </div>
+
+      <!-- Cycles Table -->
+      <div class="glass-panel overflow-hidden">
+        ${billingCyclesList.length === 0 ? `
+          <div class="p-8 text-center space-y-3">
+            <div class="text-3xl">🗓️</div>
+            <p class="text-xs text-slate-400">No billing cycles found. Click <strong>"Generate Billing Cycles"</strong> above to auto-create monthly billing cycles for your credit card accounts.</p>
+          </div>
+        ` : `
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-900/80 text-slate-400 border-b border-slate-800 font-semibold">
+                <tr>
+                  <th class="py-3 px-4">Account</th>
+                  <th class="py-3 px-4">Billing Day</th>
+                  <th class="py-3 px-4">Cycle Period</th>
+                  <th class="py-3 px-4">Expected Bill Date</th>
+                  <th class="py-3 px-4 text-right">Expected Amount</th>
+                  <th class="py-3 px-4">Status</th>
+                  <th class="py-3 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/40">
+                ${billingCyclesList.map(c => {
+                  let statusBadge = '';
+                  if (c.status === 'PAID') {
+                    statusBadge = `<span class="px-2 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold">✓ PAID</span>`;
+                  } else if (c.status === 'PARTIAL') {
+                    statusBadge = `<span class="px-2 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[10px] font-bold">⚠ PARTIAL</span>`;
+                  } else if (c.status === 'BILLED') {
+                    statusBadge = `<span class="px-2 py-1 rounded-full bg-blue-500/15 border border-blue-500/30 text-blue-400 text-[10px] font-bold">BILLED</span>`;
+                  } else {
+                    statusBadge = `<span class="px-2 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-400 text-[10px] font-medium">OPEN</span>`;
+                  }
+
+                  return `
+                    <tr class="hover:bg-slate-900/50 transition">
+                      <td class="py-3 px-4 font-bold text-white">${c.account_name || c.account_id}</td>
+                      <td class="py-3 px-4 text-slate-400 font-mono">Day ${c.billing_day}</td>
+                      <td class="py-3 px-4 text-slate-300 font-mono">${c.cycle_start_date} → ${c.cycle_end_date}</td>
+                      <td class="py-3 px-4 text-slate-300 font-mono">${c.expected_bill_date}</td>
+                      <td class="py-3 px-4 text-right font-bold font-mono text-rose-400">${formatMoney(c.expected_amount)}</td>
+                      <td class="py-3 px-4">${statusBadge}</td>
+                      <td class="py-3 px-4 text-right">
+                        <div class="flex items-center justify-end gap-1.5">
+                          <button class="btn-view-cycle bg-slate-800 hover:bg-slate-700 text-slate-200 px-2.5 py-1 rounded-md text-[11px] font-medium transition" data-id="${c.id}">
+                            🔍 Detail
+                          </button>
+                          ${c.status === 'PAID' || c.status === 'PARTIAL' ? `
+                            <button class="btn-unlink-cycle bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 px-2.5 py-1 rounded-md text-[11px] font-medium transition" data-id="${c.id}">
+                              ❌ Unlink
+                            </button>
+                          ` : `
+                            <button class="btn-reconcile-cycle bg-brand-600 hover:bg-brand-500 text-white px-2.5 py-1 rounded-md text-[11px] font-bold shadow transition" data-id="${c.id}">
+                              🔗 Match Payment
+                            </button>
+                          `}
+                          <button class="btn-delete-cycle text-slate-500 hover:text-rose-400 px-1.5 py-1 rounded transition" data-id="${c.id}">
+                            🗑️
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </div>
+    </div>
+
+    ${showGenerateCyclesModal ? renderGenerateCyclesModal() : ''}
+    ${activeCycleDetail ? renderCycleDetailModal() : ''}
+  `;
+}
+
+function renderGenerateCyclesModal() {
+  const ccAccounts = accountsList.filter(a => a.account_type === 'CREDIT_CARD');
+  const now = new Date();
+  const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  return `
+    <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-panel max-w-md w-full p-6 space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h3 class="text-lg font-bold text-white">⚡ Generate Billing Cycles</h3>
+          <button id="btn-close-generate-modal" class="text-slate-400 hover:text-white text-sm">✕</button>
+        </div>
+
+        <form id="form-generate-cycles" class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">Target Credit Card Account</label>
+            <select id="gen-account-id" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+              ${ccAccounts.map(a => `<option value="${a.id}">${a.name} (${a.institution})</option>`).join('')}
+            </select>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 mb-1">From Month</label>
+              <input type="month" id="gen-from-month" value="${currentMonthStr}" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
             </div>
-          ` : `
-            <div class="space-y-2 max-h-72 overflow-y-auto pr-1">
-              ${reconCandidates.map(c => `
-                <label class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition ${reconSelectedIDs.has(c.id) ? 'border-brand-500 bg-brand-500/10' : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'}">
-                  <input type="checkbox" class="recon-cc-check" data-txid="${c.id}" ${reconSelectedIDs.has(c.id) ? 'checked' : ''} />
-                  <div class="flex-1">
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 mb-1">To Month</label>
+              <input type="month" id="gen-to-month" value="${currentMonthStr}" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+            </div>
+          </div>
+
+          <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px] text-slate-400 space-y-1">
+            <p class="font-bold text-slate-300">💡 Israeli Weekday Rule</p>
+            <p>If expected bill date lands on Friday or Saturday, it auto-adjusts forward to Sunday.</p>
+          </div>
+
+          <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+            <button type="button" id="btn-cancel-generate-modal" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-900">Cancel</button>
+            <button type="submit" id="btn-submit-generate" class="bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow">Generate Cycles</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderCycleDetailModal() {
+  if (!activeCycleDetail) return '';
+  const { billing_cycle: cycle, transactions: txs } = activeCycleDetail;
+
+  return `
+    <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div class="glass-panel max-w-4xl w-full p-6 space-y-6 max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div>
+            <h3 class="text-lg font-bold text-white">Billing Cycle Detail: ${cycle.account_name || cycle.account_id}</h3>
+            <p class="text-xs text-slate-400 mt-0.5">
+              Period: <span class="font-mono text-slate-200">${cycle.cycle_start_date} → ${cycle.cycle_end_date}</span> &bull; Expected Bill Date: <span class="font-mono text-brand-400 font-bold">${cycle.expected_bill_date}</span>
+            </p>
+          </div>
+          <button id="btn-close-cycle-detail" class="text-slate-400 hover:text-white text-sm">✕</button>
+        </div>
+
+        <!-- Summary & Auto-Populate -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-1">
+            <span class="text-xs text-slate-400">Assigned Transactions</span>
+            <div class="text-2xl font-bold text-white">${txs.length}</div>
+          </div>
+
+          <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-1">
+            <span class="text-xs text-slate-400">Total Billed Amount</span>
+            <div class="text-2xl font-extrabold text-rose-400 font-mono">${formatMoney(cycle.expected_amount)}</div>
+          </div>
+
+          <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
+            <div>
+              <span class="text-xs text-slate-400">Auto-Assign Transactions</span>
+              <p class="text-[10px] text-slate-500 mt-0.5">Assign CC transactions matching this billing window</p>
+            </div>
+            <button id="btn-auto-populate-cycle" data-id="${cycle.id}" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs shadow transition">
+              ⚡ Auto-Populate
+            </button>
+          </div>
+        </div>
+
+        <!-- Transactions Table -->
+        <div class="space-y-2">
+          <h4 class="text-xs font-bold text-slate-300">Cycle Transactions</h4>
+          <div class="overflow-x-auto border border-slate-800 rounded-lg max-h-60">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-900 text-slate-400 border-b border-slate-800 sticky top-0">
+                <tr>
+                  <th class="py-2.5 px-3">Tx Date</th>
+                  <th class="py-2.5 px-3">Billing Date</th>
+                  <th class="py-2.5 px-3">Payee / Merchant</th>
+                  <th class="py-2.5 px-3 text-right">Billed Amount (ILS)</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/40">
+                ${txs.length === 0 ? `
+                  <tr><td colspan="4" class="py-4 text-center text-xs text-slate-500">No transactions assigned to this billing cycle yet. Click "Auto-Populate" above.</td></tr>
+                ` : txs.map(t => `
+                  <tr class="hover:bg-slate-900/40">
+                    <td class="py-2 px-3 text-slate-300 font-mono">${t.date}</td>
+                    <td class="py-2 px-3 text-slate-400 font-mono">${t.billing_date || '-'}</td>
+                    <td class="py-2 px-3 font-medium text-white">${t.payee_raw}</td>
+                    <td class="py-2 px-3 text-right font-bold font-mono text-rose-400">${formatMoney(t.amount)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Bank Payment Candidate Section -->
+        <div class="space-y-3 border-t border-slate-800 pt-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h4 class="text-xs font-bold text-white">Bank Payment Reconciliation</h4>
+              <p class="text-[11px] text-slate-400">Find candidate lump-sum payment debits from bank accounts within ±10 days of expected bill date.</p>
+            </div>
+            <button id="btn-find-bank-candidates" data-id="${cycle.id}" class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-700 transition">
+              🔍 Find Bank Payment Candidates
+            </button>
+          </div>
+
+          ${cycleBankCandidates.length > 0 ? `
+            <div class="space-y-2">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                ${cycleBankCandidates.map(c => `
+                  <div class="p-3 rounded-lg border cursor-pointer transition ${selectedCandidateID === c.id ? 'border-brand-500 bg-brand-500/10' : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'} candidate-card" data-txid="${c.id}">
                     <div class="flex items-center justify-between">
-                      <span class="text-xs font-medium text-white truncate max-w-[160px]">${c.payee_raw}</span>
+                      <span class="text-xs font-bold text-white truncate max-w-[160px]">${c.payee_raw}</span>
                       <span class="text-xs font-bold text-rose-400 font-mono">${formatMoney(c.amount)}</span>
                     </div>
-                    <span class="text-xs text-slate-400">${c.date}</span>
+                    <div class="flex items-center justify-between text-[11px] text-slate-400 mt-1">
+                      <span>${c.date} &bull; ${c.account_name || 'Bank'}</span>
+                      <span class="text-amber-400 font-mono font-semibold">Diff: ${formatMoney(Math.abs(Math.abs(c.amount) - Math.abs(cycle.expected_amount)))}</span>
+                    </div>
                   </div>
-                </label>
-              `).join('')}
-            </div>
+                `).join('')}
+              </div>
 
-            <!-- Running total -->
-            <div class="p-3 rounded-lg bg-slate-900/60 border ${Math.abs(diff) < 1 ? 'border-emerald-500/30' : 'border-amber-500/30'} text-xs space-y-1">
-              <div class="flex justify-between">
-                <span class="text-slate-400">Bank Debit:</span>
-                <span class="text-white font-mono font-bold">${formatMoney(bankDebitAmt)}</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-slate-400">Selected CC Total:</span>
-                <span class="text-brand-400 font-mono font-bold">${formatMoney(reconTotal)}</span>
-              </div>
-              <div class="flex justify-between border-t border-slate-800 pt-1">
-                <span class="text-slate-400">Difference:</span>
-                <span class="${Math.abs(diff) < 1 ? 'text-emerald-400' : 'text-amber-400'} font-mono font-bold">${formatMoney(diff)}</span>
+              <div class="flex justify-end pt-2">
+                <button id="btn-reconcile-cycle-submit" data-id="${cycle.id}" ${!selectedCandidateID ? 'disabled' : ''} class="px-4 py-2 rounded-lg text-xs font-bold transition ${!selectedCandidateID ? 'bg-slate-800 text-slate-500 cursor-not-allowed' : 'bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-500/20'}">
+                  🔗 Link Selected Bank Payment
+                </button>
               </div>
             </div>
-
-            <button id="btn-reconcile" ${reconSelectedIDs.size === 0 ? 'disabled' : ''} class="w-full text-xs font-bold py-2 rounded-lg transition ${reconSelectedIDs.size === 0 ? 'bg-slate-800 text-slate-500 cursor-not-allowed' : 'bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-500/20'}">
-              🔗 Reconcile Selected Transactions
-            </button>
-          `}
+          ` : ''}
         </div>
       </div>
     </div>
@@ -2221,11 +2496,22 @@ function attachEvents() {
         const institution = (document.getElementById('acc-institution') as HTMLInputElement).value;
         const currency = (document.getElementById('acc-currency') as HTMLSelectElement).value;
         const opening_balance = parseFloat((document.getElementById('acc-balance') as HTMLInputElement).value) || 0;
+        const billing_day_primary = account_type === 'CREDIT_CARD' ? (parseInt((document.getElementById('acc-billing-primary') as HTMLInputElement)?.value) || 10) : null;
+        const billing_day_secondary = account_type === 'CREDIT_CARD' && (document.getElementById('acc-billing-secondary') as HTMLInputElement)?.value
+          ? parseInt((document.getElementById('acc-billing-secondary') as HTMLInputElement).value) || null : null;
 
         const res = await fetch('/api/v1/accounts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, account_type, institution, currency, opening_balance }),
+          body: JSON.stringify({
+            name,
+            account_type,
+            institution,
+            currency,
+            opening_balance,
+            billing_day_primary,
+            billing_day_secondary
+          }),
         });
 
         if (res.ok) {
@@ -2392,6 +2678,7 @@ function attachEvents() {
 
         // Auto-guess column mappings
         const findCol = (terms: string[]) => cols.find(c => terms.some(t => c.toLowerCase().includes(t))) || cols[0] || '';
+        const findColOrEmpty = (terms: string[]) => cols.find(c => terms.some(t => c.toLowerCase().includes(t))) || '';
         wizardMapping.date_col = findCol(['תאריך', 'date']);
         const descCols = cols.filter(c => ['תיאור', 'payee', 'merchant', 'name', 'פרטים', 'description', 'extended', 'הרחבה', 'פירוט'].some(t => c.toLowerCase().includes(t)));
         wizardMapping.payee_col = descCols[0] || findCol(['תיאור', 'payee', 'merchant', 'name', 'פרטים']);
@@ -2399,6 +2686,9 @@ function attachEvents() {
         wizardMapping.amount_col = findCol(['סכום', 'amount', 'total']);
         wizardMapping.debit_col = findCol(['חיוב', 'debit']);
         wizardMapping.credit_col = findCol(['זיכוי', 'credit']);
+        wizardMapping.billing_date_col = findColOrEmpty(['תאריך חיוב', 'billing_date', 'billing date', 'chiyuv']);
+        wizardMapping.original_amount_col = findColOrEmpty(['סכום מקורי', 'original_amount', 'original amount', 'mekori']);
+        wizardMapping.original_currency_col = findColOrEmpty(['מטבע מקורי', 'original_currency', 'original currency', 'matbea']);
 
         wizardStep = 1;
         renderApp();
@@ -2445,6 +2735,9 @@ function attachEvents() {
       wizardMapping.debit_col = (document.getElementById('w1-debit-col') as HTMLSelectElement)?.value || wizardMapping.debit_col;
       wizardMapping.credit_col = (document.getElementById('w1-credit-col') as HTMLSelectElement)?.value || wizardMapping.credit_col;
     }
+    wizardMapping.billing_date_col = (document.getElementById('w1-billing-date-col') as HTMLSelectElement)?.value || '';
+    wizardMapping.original_amount_col = (document.getElementById('w1-orig-amount-col') as HTMLSelectElement)?.value || '';
+    wizardMapping.original_currency_col = (document.getElementById('w1-orig-currency-col') as HTMLSelectElement)?.value || '';
 
     const nextBtn = document.getElementById('btn-w1-next') as HTMLButtonElement;
     if (nextBtn) { nextBtn.disabled = true; nextBtn.innerText = '⏳ Parsing Preview...'; }
@@ -2464,6 +2757,9 @@ function attachEvents() {
         fd.append('debit_column', wizardMapping.debit_col);
         fd.append('credit_column', wizardMapping.credit_col);
       }
+      if (wizardMapping.billing_date_col) fd.append('billing_date_column', wizardMapping.billing_date_col);
+      if (wizardMapping.original_amount_col) fd.append('original_amount_column', wizardMapping.original_amount_col);
+      if (wizardMapping.original_currency_col) fd.append('original_currency_column', wizardMapping.original_currency_col);
 
       const res = await fetch('/api/v1/import/stage', { method: 'POST', body: fd });
       if (res.ok) {
@@ -2545,62 +2841,230 @@ function attachEvents() {
     renderApp();
   });
 
-  // ---- Reconciliation ----
-  document.querySelectorAll('.recon-bank-row').forEach(row => {
-    row.addEventListener('click', async (e) => {
-      const txid = (e.currentTarget as HTMLElement).getAttribute('data-txid');
-      const tx = transactionsList.find(t => t.id === txid);
-      if (!tx) return;
+  // ---- Billing Cycles Event Handlers ----
 
-      reconBankTx = tx;
-      reconCandidates = [];
-      reconSelectedIDs = new Set();
+  document.getElementById('cycle-account-filter')?.addEventListener('change', async (e) => {
+    selectedCycleAccountID = (e.currentTarget as HTMLSelectElement).value;
+    await fetchBillingCycles();
+    renderApp();
+  });
 
+  document.getElementById('cycle-status-filter')?.addEventListener('change', async (e) => {
+    selectedCycleStatusFilter = (e.currentTarget as HTMLSelectElement).value;
+    await fetchBillingCycles();
+    renderApp();
+  });
+
+  document.getElementById('btn-open-generate-modal')?.addEventListener('click', () => {
+    showGenerateCyclesModal = true;
+    renderApp();
+  });
+
+  document.getElementById('btn-close-generate-modal')?.addEventListener('click', () => {
+    showGenerateCyclesModal = false;
+    renderApp();
+  });
+
+  document.getElementById('btn-cancel-generate-modal')?.addEventListener('click', () => {
+    showGenerateCyclesModal = false;
+    renderApp();
+  });
+
+  document.getElementById('form-generate-cycles')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const account_id = (document.getElementById('gen-account-id') as HTMLSelectElement).value;
+    const from_month = (document.getElementById('gen-from-month') as HTMLInputElement).value;
+    const to_month = (document.getElementById('gen-to-month') as HTMLInputElement).value;
+
+    const submitBtn = document.getElementById('btn-submit-generate') as HTMLButtonElement;
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerText = 'Generating...'; }
+
+    try {
+      const res = await fetch('/api/v1/billing-cycles/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id, from_month, to_month }),
+      });
+
+      if (res.ok) {
+        showGenerateCyclesModal = false;
+        await fetchBillingCycles();
+        renderApp();
+        showToast('Billing cycles generated successfully', 'success');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Failed to generate cycles', 'error');
+      }
+    } catch {
+      showToast('Network error generating cycles', 'error');
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+
+  document.querySelectorAll('.btn-view-cycle').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+      if (!id) return;
       try {
-        const res = await fetch(`/api/v1/reconciliation/candidates?bank_transaction_id=${txid}`);
+        const res = await fetch(`/api/v1/billing-cycles/${id}`);
         if (res.ok) {
-          const data = await res.json();
-          reconCandidates = data.candidates || [];
+          activeCycleDetail = await res.json();
+          cycleBankCandidates = [];
+          selectedCandidateID = '';
+          renderApp();
         } else {
-          showToast('Failed to fetch candidates', 'error');
+          showToast('Failed to load cycle detail', 'error');
         }
       } catch {
-        showToast('Network error fetching candidates', 'error');
+        showToast('Network error loading cycle detail', 'error');
       }
-      renderApp();
     });
   });
 
-  document.querySelectorAll('.recon-cc-check').forEach(chk => {
-    chk.addEventListener('change', (e) => {
-      const cb = e.currentTarget as HTMLInputElement;
-      const txid = cb.getAttribute('data-txid')!;
-      if (cb.checked) reconSelectedIDs.add(txid);
-      else reconSelectedIDs.delete(txid);
-      renderApp();
-    });
+  document.getElementById('btn-close-cycle-detail')?.addEventListener('click', () => {
+    activeCycleDetail = null;
+    cycleBankCandidates = [];
+    selectedCandidateID = '';
+    renderApp();
   });
 
-  document.getElementById('btn-reconcile')?.addEventListener('click', async () => {
-    if (!reconBankTx || reconSelectedIDs.size === 0) return;
-    const res = await fetch('/api/v1/reconciliation/link', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        bank_transaction_id: reconBankTx.id,
-        credit_card_transaction_ids: [...reconSelectedIDs],
-      }),
-    });
-    if (res.ok) {
-      reconBankTx = null;
-      reconCandidates = [];
-      reconSelectedIDs = new Set();
-      await loadData();
-      renderApp();
-      showToast('Transactions reconciled successfully', 'success');
-    } else {
-      showToast('Reconciliation failed', 'error');
+  document.getElementById('btn-auto-populate-cycle')?.addEventListener('click', async (e) => {
+    const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/v1/billing-cycles/${id}/auto-populate`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        showToast(`Auto-assigned ${data.assigned_count} transactions`, 'success');
+        const detailRes = await fetch(`/api/v1/billing-cycles/${id}`);
+        if (detailRes.ok) activeCycleDetail = await detailRes.json();
+        await fetchBillingCycles();
+        renderApp();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Auto-populate failed', 'error');
+      }
+    } catch {
+      showToast('Network error auto-populating cycle', 'error');
     }
+  });
+
+  document.getElementById('btn-find-bank-candidates')?.addEventListener('click', async (e) => {
+    const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/v1/billing-cycles/${id}/bank-candidates`);
+      if (res.ok) {
+        cycleBankCandidates = (await res.json()) || [];
+        selectedCandidateID = '';
+        if (cycleBankCandidates.length === 0) {
+          showToast('No bank payment candidates found within ±10 days', 'info');
+        }
+        renderApp();
+      } else {
+        showToast('Failed to find bank payment candidates', 'error');
+      }
+    } catch {
+      showToast('Network error searching bank candidates', 'error');
+    }
+  });
+
+  document.querySelectorAll('.candidate-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      const txid = (e.currentTarget as HTMLElement).getAttribute('data-txid');
+      if (txid) {
+        selectedCandidateID = txid;
+        renderApp();
+      }
+    });
+  });
+
+  document.getElementById('btn-reconcile-cycle-submit')?.addEventListener('click', async (e) => {
+    const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+    if (!id || !selectedCandidateID) return;
+
+    try {
+      const res = await fetch(`/api/v1/billing-cycles/${id}/reconcile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bank_transaction_id: selectedCandidateID }),
+      });
+      if (res.ok) {
+        showToast('Cycle reconciled with bank payment!', 'success');
+        activeCycleDetail = null;
+        cycleBankCandidates = [];
+        selectedCandidateID = '';
+        await fetchBillingCycles();
+        await loadData();
+        renderApp();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Reconciliation failed', 'error');
+      }
+    } catch {
+      showToast('Network error reconciling cycle', 'error');
+    }
+  });
+
+  document.querySelectorAll('.btn-reconcile-cycle').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+      if (!id) return;
+      try {
+        const res = await fetch(`/api/v1/billing-cycles/${id}`);
+        if (res.ok) {
+          activeCycleDetail = await res.json();
+          const candRes = await fetch(`/api/v1/billing-cycles/${id}/bank-candidates`);
+          if (candRes.ok) cycleBankCandidates = (await candRes.json()) || [];
+          selectedCandidateID = '';
+          renderApp();
+        }
+      } catch {
+        showToast('Network error loading cycle', 'error');
+      }
+    });
+  });
+
+  document.querySelectorAll('.btn-unlink-cycle').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+      if (!id) return;
+      if (!confirm('Unlink this bank payment from the billing cycle?')) return;
+      try {
+        const res = await fetch(`/api/v1/billing-cycles/${id}/unlink`, { method: 'POST' });
+        if (res.ok) {
+          showToast('Billing cycle unlinked', 'success');
+          await fetchBillingCycles();
+          await loadData();
+          renderApp();
+        } else {
+          showToast('Failed to unlink cycle', 'error');
+        }
+      } catch {
+        showToast('Network error unlinking cycle', 'error');
+      }
+    });
+  });
+
+  document.querySelectorAll('.btn-delete-cycle').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+      if (!id) return;
+      if (!confirm('Delete this billing cycle?')) return;
+      try {
+        const res = await fetch(`/api/v1/billing-cycles/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Billing cycle deleted', 'success');
+          await fetchBillingCycles();
+          renderApp();
+        } else {
+          showToast('Failed to delete cycle', 'error');
+        }
+      } catch {
+        showToast('Network error deleting cycle', 'error');
+      }
+    });
   });
 
   // ---- Settings Save ----
