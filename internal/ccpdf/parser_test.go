@@ -236,3 +236,10 @@ func TestFilterByCutoffDate(t *testing.T) {
 		t.Errorf("unexpected filtered day result: %+v", filteredDay)
 	}
 }
+
+func TestConfigCutoffDate(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.CutoffDate != "2023-04" {
+		t.Errorf("expected default CutoffDate to be '2023-04', got %q", cfg.CutoffDate)
+	}
+}

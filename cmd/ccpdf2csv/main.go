@@ -103,8 +103,14 @@ func main() {
 	if effectiveCutoff == "" {
 		effectiveCutoff = strings.TrimSpace(*cutoffFlag)
 	}
+	if effectiveCutoff == "" && cfg != nil && cfg.CutoffDate != "" {
+		effectiveCutoff = strings.TrimSpace(cfg.CutoffDate)
+	}
+	if effectiveCutoff == "" {
+		effectiveCutoff = "2023-04"
+	}
 
-	if effectiveCutoff != "" && len(allTransactions) > 0 {
+	if len(allTransactions) > 0 {
 		initialCount := len(allTransactions)
 		allTransactions = ccpdf.FilterByCutoffDate(allTransactions, effectiveCutoff)
 		filteredCount := initialCount - len(allTransactions)

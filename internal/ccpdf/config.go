@@ -13,6 +13,7 @@ type Config struct {
 	Model               string        `json:"model"`
 	BatchSize           int           `json:"batch_size"`           // Number of payees per LocalAI micro-batch (5 to 15, default: 10)
 	BatchTimeoutSeconds int           `json:"batch_timeout_seconds"` // Timeout per batch request (default: 120)
+	CutoffDate          string        `json:"cutoff_date"`           // Default cutoff billing date or month YYYY-MM (default: "2023-04")
 	Prompts             PromptsConfig `json:"prompts"`
 }
 
@@ -29,6 +30,7 @@ func DefaultConfig() *Config {
 		Model:               "gpt-4o",
 		BatchSize:           10,
 		BatchTimeoutSeconds: 120,
+		CutoffDate:          "2023-04",
 		Prompts: PromptsConfig{
 			FixSpacesPrompt:      "You are a Hebrew text correction assistant for credit card statements. Fix missing spaces between Hebrew words in merchant names. Return ONLY a JSON object mapping raw payees to cleaned payees: {\"raw_payee\": \"cleaned payee\"}",
 			ExtractBillingPrompt: "You are a financial statement analyzer. Extract billing dates for credit card statement transactions. Return ONLY JSON.",
@@ -60,6 +62,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.BatchTimeoutSeconds <= 0 {
 		cfg.BatchTimeoutSeconds = 120
+	}
+	if cfg.CutoffDate == "" {
+		cfg.CutoffDate = "2023-04"
 	}
 
 	return cfg, nil
