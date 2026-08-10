@@ -158,6 +158,7 @@ func (s *BillingService) FindBankPaymentCandidates(cycleID string) ([]models.Tra
 		LEFT JOIN categories c ON t.category_id = c.id
 		WHERE a.account_type = 'BANK'
 		  AND t.amount < 0
+		  AND (t.category_id = 'cat-credit-card' OR c.name_en = 'Credit Card Payment' OR c.name_he LIKE '%כרטיס אשראי%')
 		  AND t.date BETWEEN ? AND ?
 		  AND t.id NOT IN (
 			SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL AND id != ?

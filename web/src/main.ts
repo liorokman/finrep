@@ -265,10 +265,6 @@ let selectedCycleStatusFilter: string = '';
 let activeCycleDetail: { billing_cycle: BillingCycle; transactions: Transaction[] } | null = null;
 let cycleBankCandidates: Transaction[] = [];
 let selectedCandidateID: string = '';
-let showGenerateCyclesModal: boolean = false;
-let generateFromMonth: string = '';
-let generateToMonth: string = '';
-let generateAccountID: string = '';
 
 // ---- Utilities ----
 
@@ -1292,10 +1288,8 @@ function renderTransactionTableRows(txs: Transaction[]) {
             const payeeLower = (t.payee_raw || '').toLowerCase();
             const catEnLower = (t.category_name_en || '').toLowerCase();
             const isCCCategory = t.category_id === 'cat-credit-card' ||
-              t.category_id === 'cat-transfers' ||
-              catEnLower.includes('credit card') ||
+              catEnLower === 'credit card payment' ||
               (t.category_name_he || '').includes('כרטיס אשראי') ||
-              payeeLower.includes('כרטיס') || payeeLower.includes('cal') || payeeLower.includes('isracard') || payeeLower.includes('leumi') ||
               Boolean(t.linked_account_id);
             const isBankDebit = (t.amount ?? 0) < 0 && isCCCategory;
 
@@ -2255,9 +2249,6 @@ function renderBillingCyclesView() {
           <button id="btn-auto-match-cc" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-lg shadow-emerald-500/20 transition flex items-center gap-1.5">
             <span>⚡ Auto-Match Payments</span>
           </button>
-          <button id="btn-open-generate-modal" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-lg shadow-brand-500/20 transition flex items-center gap-1.5">
-            <span>⚡ Generate Billing Cycles</span>
-          </button>
         </div>
       </div>
 
@@ -2293,7 +2284,7 @@ function renderBillingCyclesView() {
         ${billingCyclesList.length === 0 ? `
           <div class="p-8 text-center space-y-3">
             <div class="text-3xl">🗓️</div>
-            <p class="text-xs text-slate-400">No billing cycles found. Click <strong>"Generate Billing Cycles"</strong> above to auto-create monthly billing cycles for your credit card accounts.</p>
+            <p class="text-xs text-slate-400">No billing cycles found. Click <strong>"⚡ Auto-Match Payments"</strong> above to reconcile your credit card payments.</p>
           </div>
         ` : `
           <div class="overflow-x-auto">
@@ -2374,55 +2365,7 @@ function renderBillingCyclesView() {
       </div>
     </div>
 
-    ${showGenerateCyclesModal ? renderGenerateCyclesModal() : ''}
     ${activeCycleDetail ? renderCycleDetailModal() : ''}
-  `;
-}
-
-function renderGenerateCyclesModal() {
-  const ccAccounts = accountsList.filter(a => a.account_type === 'CREDIT_CARD');
-  const now = new Date();
-  const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-  return `
-    <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div class="glass-panel max-w-md w-full p-6 space-y-4">
-        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-          <h3 class="text-lg font-bold text-white">⚡ Generate Billing Cycles</h3>
-          <button id="btn-close-generate-modal" class="text-slate-400 hover:text-white text-sm">✕</button>
-        </div>
-
-        <form id="form-generate-cycles" class="space-y-4">
-          <div>
-            <label class="block text-xs font-semibold text-slate-300 mb-1">Target Credit Card Account</label>
-            <select id="gen-account-id" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
-              ${ccAccounts.map(a => `<option value="${a.id}">${a.name} (${a.institution})</option>`).join('')}
-            </select>
-          </div>
-
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="block text-xs font-semibold text-slate-300 mb-1">From Month</label>
-              <input type="month" id="gen-from-month" value="${currentMonthStr}" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
-            </div>
-            <div>
-              <label class="block text-xs font-semibold text-slate-300 mb-1">To Month</label>
-              <input type="month" id="gen-to-month" value="${currentMonthStr}" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
-            </div>
-          </div>
-
-          <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px] text-slate-400 space-y-1">
-            <p class="font-bold text-slate-300">💡 Israeli Weekday Rule</p>
-            <p>If expected bill date lands on Friday or Saturday, it auto-adjusts forward to Sunday.</p>
-          </div>
-
-          <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
-            <button type="button" id="btn-cancel-generate-modal" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-900">Cancel</button>
-            <button type="submit" id="btn-submit-generate" class="bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow">Generate Cycles</button>
-          </div>
-        </form>
-      </div>
-    </div>
   `;
 }
 
@@ -3027,52 +2970,7 @@ function attachEvents() {
     renderApp();
   });
 
-  document.getElementById('btn-open-generate-modal')?.addEventListener('click', () => {
-    showGenerateCyclesModal = true;
-    renderApp();
-  });
 
-  document.getElementById('btn-close-generate-modal')?.addEventListener('click', () => {
-    showGenerateCyclesModal = false;
-    renderApp();
-  });
-
-  document.getElementById('btn-cancel-generate-modal')?.addEventListener('click', () => {
-    showGenerateCyclesModal = false;
-    renderApp();
-  });
-
-  document.getElementById('form-generate-cycles')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const account_id = (document.getElementById('gen-account-id') as HTMLSelectElement).value;
-    const from_month = (document.getElementById('gen-from-month') as HTMLInputElement).value;
-    const to_month = (document.getElementById('gen-to-month') as HTMLInputElement).value;
-
-    const submitBtn = document.getElementById('btn-submit-generate') as HTMLButtonElement;
-    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerText = 'Generating...'; }
-
-    try {
-      const res = await fetch('/api/v1/billing-cycles/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id, from_month, to_month }),
-      });
-
-      if (res.ok) {
-        showGenerateCyclesModal = false;
-        await fetchBillingCycles();
-        renderApp();
-        showToast('Billing cycles generated successfully', 'success');
-      } else {
-        const err = await res.json().catch(() => ({}));
-        showToast(err.error || 'Failed to generate cycles', 'error');
-      }
-    } catch {
-      showToast('Network error generating cycles', 'error');
-    } finally {
-      if (submitBtn) submitBtn.disabled = false;
-    }
-  });
 
   document.querySelectorAll('.btn-view-cycle').forEach(btn => {
     btn.addEventListener('click', async (e) => {

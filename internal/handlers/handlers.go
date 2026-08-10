@@ -92,7 +92,6 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 
 	// Billing Cycles (Reconciliation)
 	api.GET("/billing-cycles", h.GetBillingCycles)
-	api.POST("/billing-cycles/generate", h.GenerateBillingCycles)
 	api.GET("/billing-cycles/:id", h.GetBillingCycleDetail)
 	api.POST("/billing-cycles/:id/auto-populate", h.AutoPopulateCycle)
 	api.GET("/billing-cycles/:id/bank-candidates", h.GetBankPaymentCandidates)
@@ -699,24 +698,7 @@ func (h *Handler) GetBillingCycles(c echo.Context) error {
 	return c.JSON(http.StatusOK, cycles)
 }
 
-type GenerateCyclesRequest struct {
-	AccountID string `json:"account_id"`
-	FromMonth string `json:"from_month"`
-	ToMonth   string `json:"to_month"`
-}
 
-func (h *Handler) GenerateBillingCycles(c echo.Context) error {
-	var req GenerateCyclesRequest
-	if err := c.Bind(&req); err != nil || req.AccountID == "" || req.FromMonth == "" || req.ToMonth == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "account_id, from_month, and to_month are required"})
-	}
-
-	cycles, err := h.billingSvc.GenerateCycles(req.AccountID, req.FromMonth, req.ToMonth)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusCreated, cycles)
-}
 
 func (h *Handler) GetBillingCycleDetail(c echo.Context) error {
 	id := c.Param("id")
