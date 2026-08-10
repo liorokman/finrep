@@ -76,6 +76,7 @@ interface MoMCell {
 }
 
 interface MoMRow {
+  category_id: string;
   category_name: string;
   color_hex: string;
   months: MoMCell[];
@@ -474,16 +475,11 @@ function renderApp() {
   if (!app) return;
 
   const totalAssets = accountsList
+    .filter(a => a.account_type === 'BANK')
     .map(a => getBalance(a))
-    .filter(bal => bal >= 0)
     .reduce((sum, bal) => sum + bal, 0);
 
-  const totalLiabilities = accountsList
-    .map(a => getBalance(a))
-    .filter(bal => bal < 0)
-    .reduce((sum, bal) => sum + Math.abs(bal), 0);
-
-  const netWorth = totalAssets - totalLiabilities;
+  const netWorth = totalAssets;
   const pendingSuggestionsCount = transactionsList.filter(t => t.suggested_category_en).length;
 
   const showLoginView = isUnauthenticated || (authInfo?.oidc_enabled && !authInfo?.user);
@@ -541,7 +537,7 @@ function renderApp() {
     <!-- Main Content Area -->
     <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
       ${showLoginView ? renderLoginView() : `
-        ${activeTab === 'dashboard' ? renderDashboard(netWorth, totalAssets, totalLiabilities) : ''}
+        ${activeTab === 'dashboard' ? renderDashboard(netWorth, totalAssets) : ''}
         ${activeTab === 'accounts' ? renderAccountsView() : ''}
         ${activeTab === 'transactions' ? renderTransactionsView() : ''}
         ${activeTab === 'categories' ? renderCategoriesView() : ''}
@@ -569,7 +565,6 @@ function renderApp() {
       renderCategoryDonutChart('donut-chart-canvas', donutChartData);
       renderCashFlowChart('cashflow-chart-canvas', cashFlowChartData);
       renderNetWorthChart('networth-chart-canvas', netWorthData);
-      renderCCPayoffChart('ccpayoff-chart-canvas', ccPayoffData);
       renderMoMHeatmap();
     }, 50);
   }
@@ -590,31 +585,25 @@ function renderNavButton(id: string, label: string) {
 
 // ---- Dashboard ----
 
-function renderDashboard(netWorth: number, assets: number, liabilities: number) {
+function renderDashboard(netWorth: number, assets: number) {
   const momMonths = momHeatmapData.length > 0 ? momHeatmapData[0].months.map(m => m.month) : [];
   const maxMoM = momHeatmapData.flatMap(r => r.months.map(m => m.amount)).reduce((a, b) => Math.max(a, b), 1);
 
   return `
     <div class="space-y-8">
       <!-- Metric Overview Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div class="glass-panel p-6 relative overflow-hidden">
           <div class="absolute -right-4 -bottom-4 w-24 h-24 bg-brand-500/10 rounded-full blur-xl"></div>
           <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Net Worth (ILS)</p>
           <h2 class="text-3xl font-extrabold text-white mt-2">${formatMoney(netWorth)}</h2>
-          <span class="text-xs text-emerald-400 mt-2 inline-block">↑ Aggregated across accounts</span>
+          <span class="text-xs text-emerald-400 mt-2 inline-block">↑ Aggregated Bank Accounts</span>
         </div>
 
         <div class="glass-panel p-6 relative overflow-hidden">
-          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Assets</p>
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Bank Assets</p>
           <h2 class="text-3xl font-extrabold text-emerald-400 mt-2">${formatMoney(assets)}</h2>
-          <span class="text-xs text-slate-500 mt-2 inline-block">Bank &amp; Liquid Cash</span>
-        </div>
-
-        <div class="glass-panel p-6 relative overflow-hidden">
-          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Liabilities &amp; Card Balances</p>
-          <h2 class="text-3xl font-extrabold text-rose-400 mt-2">${formatMoney(liabilities)}</h2>
-          <span class="text-xs text-slate-500 mt-2 inline-block">Credit Card Billed Liabilities</span>
+          <span class="text-xs text-slate-500 mt-2 inline-block">Checking &amp; Savings Accounts</span>
         </div>
       </div>
 
@@ -693,50 +682,37 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
         </div>
       </div>
 
-      <!-- Charts Row 2: Net Worth Trend + CC Payoff -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="glass-panel p-6 space-y-4">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
-            <div>
-              <h3 class="font-bold text-sm text-white flex items-center gap-2">
-                <span>Net Worth Over Time</span>
-                <span class="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-mono">
-                  ${netWorthData.length} Points (${widgetFilters.networthFromMonth} to ${widgetFilters.networthToMonth})
-                </span>
-              </h3>
-            </div>
-
-            <div class="flex flex-wrap items-center gap-2">
-              <!-- Quick Presets -->
-              <div class="inline-flex rounded-md border border-slate-800 bg-slate-950 p-0.5 text-[11px]">
-                <button id="btn-networth-preset-3m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 3 ? 'bg-brand-600 text-white font-bold' : ''}">3M</button>
-                <button id="btn-networth-preset-6m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 6 ? 'bg-brand-600 text-white font-bold' : ''}">6M</button>
-                <button id="btn-networth-preset-12m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 12 ? 'bg-brand-600 text-white font-bold' : ''}">12M</button>
-              </div>
-
-              <!-- Month Pickers -->
-              <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-[11px]">
-                <span class="text-slate-400">From:</span>
-                <input type="month" id="widget-networth-from" value="${widgetFilters.networthFromMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
-                <span class="text-slate-400">To:</span>
-                <input type="month" id="widget-networth-to" value="${widgetFilters.networthToMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
-              </div>
-            </div>
+      <!-- Net Worth Trend -->
+      <div class="glass-panel p-6 space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+          <div>
+            <h3 class="font-bold text-sm text-white flex items-center gap-2">
+              <span>Net Worth Over Time</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-mono">
+                ${netWorthData.length} Points (${widgetFilters.networthFromMonth} to ${widgetFilters.networthToMonth})
+              </span>
+            </h3>
           </div>
-          <div class="h-64 relative">
-            <canvas id="networth-chart-canvas"></canvas>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- Quick Presets -->
+            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950 p-0.5 text-[11px]">
+              <button id="btn-networth-preset-3m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 3 ? 'bg-brand-600 text-white font-bold' : ''}">3M</button>
+              <button id="btn-networth-preset-6m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 6 ? 'bg-brand-600 text-white font-bold' : ''}">6M</button>
+              <button id="btn-networth-preset-12m" class="px-2.5 py-1 rounded text-slate-400 hover:text-white transition ${netWorthData.length === 12 ? 'bg-brand-600 text-white font-bold' : ''}">12M</button>
+            </div>
+
+            <!-- Month Pickers -->
+            <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-[11px]">
+              <span class="text-slate-400">From:</span>
+              <input type="month" id="widget-networth-from" value="${widgetFilters.networthFromMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+              <span class="text-slate-400">To:</span>
+              <input type="month" id="widget-networth-to" value="${widgetFilters.networthToMonth}" class="bg-transparent text-slate-200 focus:outline-none font-mono">
+            </div>
           </div>
         </div>
-        <div class="glass-panel p-6 space-y-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-bold text-sm text-white">Installment Payoff Forecast</h3>
-            ${renderWidgetAccountSelector('widget-acc-payoff', widgetFilters.payoffAcc)}
-          </div>
-          <div class="h-64 relative">
-            ${ccPayoffData.length === 0
-              ? `<div class="flex items-center justify-center h-full text-slate-500 text-xs">No installment transactions found.</div>`
-              : `<canvas id="ccpayoff-chart-canvas"></canvas>`}
-          </div>
+        <div class="h-64 relative">
+          <canvas id="networth-chart-canvas"></canvas>
         </div>
       </div>
 
@@ -843,7 +819,13 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
                       ${row.months.map(cell => {
                         const intensity = maxMoM > 0 ? cell.amount / maxMoM : 0;
                         const alpha = (0.1 + intensity * 0.75).toFixed(2);
-                        return `<td class="py-2.5 px-2 text-center rounded font-mono min-w-[75px]" style="background:${cell.amount > 0 ? `rgba(244,63,94,${alpha})` : 'transparent'}">
+                        const catId = row.category_id || categoriesList.find(c => c.name_en === row.category_name || c.name_he === row.category_name)?.id || '';
+                        return `<td class="mom-cell py-2.5 px-2 text-center rounded font-mono min-w-[75px] cursor-pointer hover:ring-2 hover:ring-brand-500 hover:scale-105 transition-all"
+                                     data-cat-id="${catId}"
+                                     data-cat-name="${row.category_name}"
+                                     data-month="${cell.month}"
+                                     title="Click to view ${row.category_name} transactions for ${cell.month}"
+                                     style="background:${cell.amount > 0 ? `rgba(244,63,94,${alpha})` : 'transparent'}">
                           ${cell.amount > 0 ? formatMoney(cell.amount) : '-'}
                         </td>`;
                       }).join('')}
@@ -919,15 +901,6 @@ function renderDashboard(netWorth: number, assets: number, liabilities: number) 
                 `).join('')}
               </div>`}
         </div>
-      </div>
-
-      <!-- Recent Transactions -->
-      <div class="glass-panel p-6 space-y-4">
-        <div class="flex items-center justify-between">
-          <h3 class="font-bold text-lg text-white">Recent Transactions</h3>
-          <span class="text-xs text-slate-400">${transactionsList.length} loaded</span>
-        </div>
-        ${renderTransactionTableRows(transactionsList.slice(0, 10))}
       </div>
     </div>
   `;
@@ -2552,6 +2525,49 @@ function attachEvents() {
         activeTab = tab;
         renderApp();
       }
+    });
+  });
+
+  // Heatmap cell click -> navigate to filtered transactions
+  document.querySelectorAll('.mom-cell').forEach(cell => {
+    cell.addEventListener('click', async (e) => {
+      const target = e.currentTarget as HTMLElement;
+      const catId = target.getAttribute('data-cat-id');
+      const catName = target.getAttribute('data-cat-name');
+      const monthStr = target.getAttribute('data-month'); // YYYY-MM
+
+      let categoryID = catId;
+      if (!categoryID && catName) {
+        const found = categoriesList.find(c => c.name_en === catName || c.name_he === catName);
+        if (found) categoryID = found.id;
+      }
+
+      if (monthStr) {
+        const parts = monthStr.split('-');
+        if (parts.length === 2) {
+          const year = parseInt(parts[0], 10);
+          const month = parseInt(parts[1], 10);
+          const lastDay = new Date(year, month, 0).getDate();
+          txFilterStartDate = `${monthStr}-01`;
+          txFilterEndDate = `${monthStr}-${String(lastDay).padStart(2, '0')}`;
+        }
+      }
+
+      if (categoryID) {
+        txFilterCategoryIDs = [categoryID];
+        txFilterCategoryType = 'EXPENSE';
+      } else {
+        txFilterCategoryIDs = [];
+        txFilterCategoryType = '';
+      }
+
+      txFilterAccountID = widgetFilters.momAcc || '';
+      txFilterSearch = '';
+      activeTab = 'transactions';
+
+      await loadData();
+      renderApp();
+      showToast(`Filtered transactions for ${catName || 'category'} (${monthStr})`, 'info');
     });
   });
 

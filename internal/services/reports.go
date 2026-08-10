@@ -1,7 +1,7 @@
 package services
 
 import (
-	"math"
+	"fmt"
 	"time"
 
 	"github.com/liorokman/finrep/internal/database"
@@ -60,6 +60,7 @@ type MoMCell struct {
 }
 
 type MoMRow struct {
+	CategoryID   string    `json:"category_id"`
 	CategoryName string    `json:"category_name"`
 	ColorHex     string    `json:"color_hex"`
 	Months       []MoMCell `json:"months"`
@@ -92,30 +93,26 @@ type AnomalyItem struct {
 }
 
 func (s *ReportService) GetNetWorthTrend(startDate, endDate string) ([]NetWorthPoint, error) {
-	// Get all accounts and their opening balances
+	// Get all accounts and opening balances for BANK accounts
 	accounts, err := s.db.GetAccounts()
 	if err != nil {
 		return nil, err
 	}
 
-	var openingAssets, openingLiabilities float64
+	var openingAssets float64
 	for _, a := range accounts {
 		if a.AccountType == "BANK" {
 			openingAssets += a.OpeningBalance
-		} else if a.AccountType == "CREDIT_CARD" {
-			openingLiabilities += math.Abs(a.OpeningBalance)
 		}
 	}
 
-	// Get monthly net flow per account type
+	// Get monthly net flow for BANK accounts only
 	rows, err := s.db.Query(`
 		SELECT strftime('%Y-%m', t.date) as month,
-		       SUM(CASE WHEN a.account_type = 'BANK' AND t.amount >= 0 THEN t.amount ELSE 0 END) as bank_in,
-		       SUM(CASE WHEN a.account_type = 'BANK' AND t.amount < 0 THEN t.amount ELSE 0 END) as bank_out,
-		       SUM(CASE WHEN a.account_type = 'CREDIT_CARD' THEN t.amount ELSE 0 END) as cc_flow,
-		       SUM(CASE WHEN a.account_type = 'BANK' AND t.linked_account_id IS NOT NULL AND t.linked_account_id != 'EXTERNAL' THEN ABS(t.amount) ELSE 0 END) as cc_payments
+		       SUM(t.amount) as bank_flow
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
+		WHERE a.account_type = 'BANK'
 		GROUP BY month
 		ORDER BY month ASC
 	`)
@@ -126,43 +123,35 @@ func (s *ReportService) GetNetWorthTrend(startDate, endDate string) ([]NetWorthP
 
 	var points []NetWorthPoint
 	runningAssets := openingAssets
-	runningLiabilities := openingLiabilities
 
 	for rows.Next() {
 		var month string
-		var bankIn, bankOut, ccFlow, ccPayments float64
-		if err := rows.Scan(&month, &bankIn, &bankOut, &ccFlow, &ccPayments); err != nil {
+		var bankFlow float64
+		if err := rows.Scan(&month, &bankFlow); err != nil {
 			return nil, err
 		}
-		runningAssets += bankIn + bankOut // bankOut is already negative
-		// CC spending (ccFlow negative) increases liabilities. Assigned bank payments (ccPayments positive) settle liabilities.
-		runningLiabilities += -ccFlow - ccPayments
-		if runningLiabilities < 0 {
-			runningLiabilities = 0
-		}
+		runningAssets += bankFlow
 		points = append(points, NetWorthPoint{
 			Date:             month,
 			TotalAssets:      runningAssets,
-			TotalLiabilities: runningLiabilities,
-			NetWorth:         runningAssets - runningLiabilities,
+			TotalLiabilities: 0,
+			NetWorth:         runningAssets,
 		})
 	}
 
 	// If no historical data, fall back to current snapshot
 	if len(points) == 0 {
-		var totalAssets, totalLiabilities float64
+		var totalAssets float64
 		for _, a := range accounts {
 			if a.AccountType == "BANK" {
 				totalAssets += a.CurrentBalance
-			} else if a.AccountType == "CREDIT_CARD" {
-				totalLiabilities += math.Abs(a.CurrentBalance)
 			}
 		}
 		return []NetWorthPoint{{
 			Date:             time.Now().Format("2006-01"),
 			TotalAssets:      totalAssets,
-			TotalLiabilities: totalLiabilities,
-			NetWorth:         totalAssets - totalLiabilities,
+			TotalLiabilities: 0,
+			NetWorth:         totalAssets,
 		}}, nil
 	}
 
@@ -245,9 +234,11 @@ func (s *ReportService) GetCategoryDonut(accountID, startDate, endDate string) (
 	query := `
 		SELECT c.id, c.name_en, c.color_hex, SUM(ABS(t.amount)) as total
 		FROM transactions t
+		JOIN accounts a ON t.account_id = a.id
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
-		  AND (t.linked_account_id IS NULL OR t.linked_account_id = 'EXTERNAL')
+		  AND a.account_type = 'CREDIT_CARD'
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = '' OR t.linked_account_id = 'EXTERNAL')
 		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 	`
 	var args []interface{}
@@ -429,13 +420,21 @@ func (s *ReportService) GetForeignCurrencyReport() ([]ForeignCurrencyItem, error
 
 func (s *ReportService) GetAnomalies() ([]AnomalyItem, error) {
 	rows, err := s.db.Query(`
-		SELECT id, date, payee_raw, ABS(amount)
-		FROM transactions
-		WHERE amount < 0
-		  AND (linked_account_id IS NULL OR linked_account_id = 'EXTERNAL')
-		  AND id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
-		  AND ABS(amount) > 1000
-		ORDER BY date DESC
+		WITH category_stats AS (
+			SELECT category_id, AVG(ABS(amount)) as avg_amount
+			FROM transactions
+			WHERE amount < 0 AND category_id IS NOT NULL
+			GROUP BY category_id
+		)
+		SELECT t.id, t.date, t.payee_raw, ABS(t.amount), c.name_en, cs.avg_amount
+		FROM transactions t
+		JOIN category_stats cs ON t.category_id = cs.category_id
+		JOIN categories c ON t.category_id = c.id
+		WHERE t.amount < 0
+		  AND ABS(t.amount) > 2 * cs.avg_amount
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = '' OR t.linked_account_id = 'EXTERNAL')
+		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
+		ORDER BY t.date DESC
 		LIMIT 10
 	`)
 	if err != nil {
@@ -446,10 +445,12 @@ func (s *ReportService) GetAnomalies() ([]AnomalyItem, error) {
 	var items []AnomalyItem
 	for rows.Next() {
 		var item AnomalyItem
-		if err := rows.Scan(&item.TransactionID, &item.Date, &item.Payee, &item.Amount); err != nil {
+		var catName string
+		var avgAmt float64
+		if err := rows.Scan(&item.TransactionID, &item.Date, &item.Payee, &item.Amount, &catName, &avgAmt); err != nil {
 			return nil, err
 		}
-		item.Reason = "Unusually high transaction amount (> ₪1,000)"
+		item.Reason = fmt.Sprintf("Spent ₪%.2f (> 2× %s category avg ₪%.2f)", item.Amount, catName, avgAmt)
 		items = append(items, item)
 	}
 	return items, nil
@@ -509,13 +510,13 @@ func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]M
 	}
 
 	query := `
-		SELECT c.name_en, c.color_hex,
+		SELECT c.id, c.name_en, c.color_hex,
 		       strftime('%Y-%m', t.date) as month,
 		       SUM(ABS(t.amount)) as total
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
-		  AND (t.linked_account_id IS NULL OR t.linked_account_id = 'EXTERNAL')
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = '' OR t.linked_account_id = 'EXTERNAL')
 		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		  AND strftime('%Y-%m', t.date) >= ?
 		  AND strftime('%Y-%m', t.date) <= ?
@@ -525,7 +526,7 @@ func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]M
 		query += " AND t.account_id = ?"
 		args = append(args, accountID)
 	}
-	query += " GROUP BY c.name_en, month ORDER BY c.name_en ASC, month ASC"
+	query += " GROUP BY c.id, c.name_en, month ORDER BY c.name_en ASC, month ASC"
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -537,9 +538,9 @@ func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]M
 	rowOrder := []string{}
 
 	for rows.Next() {
-		var catName, colorHex, month string
+		var catID, catName, colorHex, month string
 		var total float64
-		if err := rows.Scan(&catName, &colorHex, &month, &total); err != nil {
+		if err := rows.Scan(&catID, &catName, &colorHex, &month, &total); err != nil {
 			return nil, err
 		}
 		if _, exists := rowMap[catName]; !exists {
@@ -548,6 +549,7 @@ func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]M
 				cells[i] = MoMCell{Month: m, Amount: 0}
 			}
 			rowMap[catName] = &MoMRow{
+				CategoryID:   catID,
 				CategoryName: catName,
 				ColorHex:     colorHex,
 				Months:       cells,

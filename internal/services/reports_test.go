@@ -45,10 +45,12 @@ func TestReportService_NewReports(t *testing.T) {
 
 	// Insert test transactions
 	_, err := db.Exec(`
-		INSERT INTO transactions (id, account_id, date, amount, currency, payee_raw)
-		VALUES ('tx1', ?, '2026-08-01', 5000.0, 'ILS', 'Salary'),
-		       ('tx2', ?, '2026-08-05', -1500.0, 'ILS', 'Supermarket')
-	`, acc.ID, acc.ID)
+		INSERT INTO transactions (id, account_id, date, amount, currency, payee_raw, category_id)
+		VALUES ('tx1', ?, '2026-08-01', 5000.0, 'ILS', 'Salary', 'cat-salary'),
+		       ('tx2', ?, '2026-08-02', -100.0, 'ILS', 'Small Grocery 1', 'cat-groceries'),
+		       ('tx3', ?, '2026-08-03', -100.0, 'ILS', 'Small Grocery 2', 'cat-groceries'),
+		       ('tx4', ?, '2026-08-05', -1500.0, 'ILS', 'Supermarket Spike', 'cat-groceries')
+	`, acc.ID, acc.ID, acc.ID, acc.ID)
 	if err != nil {
 		t.Fatalf("failed to insert transactions: %v", err)
 	}
@@ -76,12 +78,12 @@ func TestReportService_NewReports(t *testing.T) {
 		t.Errorf("expected at least 1 net worth point, got 0")
 	}
 
-	// Test Anomalies
+	// Test Anomalies (tx4 at 1500 > 2x average 566.67 for cat-groceries)
 	anoms, err := svc.GetAnomalies()
 	if err != nil {
 		t.Fatalf("GetAnomalies failed: %v", err)
 	}
 	if len(anoms) != 1 {
-		t.Errorf("expected 1 anomaly for transactions with ABS(amount) > 1000, got %d", len(anoms))
+		t.Errorf("expected 1 anomaly (> 2x category average), got %d", len(anoms))
 	}
 }
