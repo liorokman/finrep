@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -97,7 +98,9 @@ func (h *Handler) RegisterRoutes(e *echo.Echo) {
 	api.GET("/billing-cycles/:id/bank-candidates", h.GetBankPaymentCandidates)
 	api.POST("/billing-cycles/:id/reconcile", h.ReconcileCycle)
 	api.POST("/billing-cycles/:id/unlink", h.UnlinkCycle)
+	api.POST("/reconciliation/auto-match", h.AutoMatchCCPayments)
 	api.DELETE("/billing-cycles/:id", h.DeleteBillingCycle)
+	api.POST("/transactions/:id/assign-cc", h.AssignTransactionCC)
 
 	// Reports
 	api.GET("/reports/net-worth", h.GetNetWorthReport)
@@ -798,6 +801,31 @@ func (h *Handler) DeleteBillingCycle(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+type AssignCCRequest struct {
+	CreditCardAccountID *string `json:"credit_card_account_id"`
+}
+
+func (h *Handler) AssignTransactionCC(c echo.Context) error {
+	txID := c.Param("id")
+	var req AssignCCRequest
+	_ = c.Bind(&req)
+
+	targetAccID := ""
+	if req.CreditCardAccountID != nil {
+		targetAccID = *req.CreditCardAccountID
+	}
+
+	if err := h.db.LinkBankPaymentToAccount(txID, targetAccID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	updated, err := h.db.GetTransactionByID(txID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, updated)
+}
+
 func (h *Handler) GetNetWorthReport(c echo.Context) error {
 	res, err := h.reportSvc.GetNetWorthTrend(
 		c.QueryParam("start_date"),
@@ -941,4 +969,15 @@ func (h *Handler) GetMoMHeatmapReport(c echo.Context) error {
 		res = []services.MoMRow{}
 	}
 	return c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) AutoMatchCCPayments(c echo.Context) error {
+	count, err := h.billingSvc.AutoMatchCCPayments()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"matched_count": count,
+		"message":       fmt.Sprintf("Successfully matched %d credit card payments", count),
+	})
 }

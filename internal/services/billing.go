@@ -2,6 +2,8 @@ package services
 
 import (
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/liorokman/finrep/internal/database"
@@ -150,7 +152,7 @@ func (s *BillingService) FindBankPaymentCandidates(cycleID string) ([]models.Tra
 		       t.current_installment, t.total_installments,
 		       t.payee_raw, t.payee_cleaned, t.category_id, c.name_he, c.name_en,
 		       t.suggested_category_he, t.suggested_category_en, t.suggested_category_type,
-		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.created_at, t.updated_at
+		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.linked_account_id, t.created_at, t.updated_at
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
@@ -176,7 +178,7 @@ func (s *BillingService) FindBankPaymentCandidates(cycleID string) ([]models.Tra
 			&tx.CurrentInstallment, &tx.TotalInstallments,
 			&tx.PayeeRaw, &tx.PayeeCleaned, &tx.CategoryID, &tx.CategoryNameHE, &tx.CategoryNameEN,
 			&tx.SuggestedCategoryHE, &tx.SuggestedCategoryEN, &tx.SuggestedCategoryType,
-			&tx.Notes, &tx.ImportHash, &tx.IsReviewed, &tx.CategorizedBy, &tx.CreatedAt, &tx.UpdatedAt,
+			&tx.Notes, &tx.ImportHash, &tx.IsReviewed, &tx.CategorizedBy, &tx.LinkedAccountID, &tx.CreatedAt, &tx.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -195,3 +197,146 @@ func (s *BillingService) ReconcileCycle(cycleID, bankTxID string) error {
 func (s *BillingService) UnlinkCycle(cycleID string) error {
 	return s.db.UnlinkBankPaymentFromCycle(cycleID)
 }
+
+// AutoMatchCCPayments automatically matches Leumi bank debit transactions with CC billing cycles & external cards.
+func (s *BillingService) AutoMatchCCPayments() (int, error) {
+	accounts, err := s.db.GetAccounts()
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch accounts: %w", err)
+	}
+
+	// 1. Generate & populate billing cycles for all credit card accounts across date range
+	for _, acc := range accounts {
+		if acc.AccountType == models.AccountTypeCreditCard {
+			s.GenerateCycles(acc.ID, "2023-01", "2026-12")
+			cList, _ := s.db.GetBillingCycles(acc.ID, "")
+			for _, c := range cList {
+				s.AutoPopulateCycle(c.ID)
+			}
+		}
+	}
+
+	// 2. Fetch all open/billed cycles WITH UPDATED EXPECTED AMOUNTS after population
+	var cycles []models.BillingCycle
+	for _, acc := range accounts {
+		if acc.AccountType == models.AccountTypeCreditCard {
+			cList, err := s.db.GetBillingCycles(acc.ID, "")
+			if err == nil {
+				for _, c := range cList {
+					if c.ExpectedAmount != nil && *c.ExpectedAmount > 0 && (c.BankTransactionID == nil || *c.BankTransactionID == "") {
+						cycles = append(cycles, c)
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Fetch unassigned bank debit transactions
+	rows, err := s.db.Query(`
+		SELECT t.id, t.amount, t.date, t.payee_raw
+		FROM transactions t
+		JOIN accounts a ON t.account_id = a.id
+		WHERE a.account_type = 'BANK' AND t.amount < 0
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query bank transactions: %w", err)
+	}
+	defer rows.Close()
+
+	type BankTx struct {
+		id, date, payee string
+		amt             float64
+	}
+	var bankTxs []BankTx
+	for rows.Next() {
+		var bt BankTx
+		if err := rows.Scan(&bt.id, &bt.amt, &bt.date, &bt.payee); err == nil {
+			bankTxs = append(bankTxs, bt)
+		}
+	}
+
+	matchedCount := 0
+
+	for _, bt := range bankTxs {
+		btAmt := math.Abs(bt.amt)
+		if len(bt.date) < 10 {
+			continue
+		}
+		btDate, err := time.Parse("2006-01-02", bt.date[:10])
+		if err != nil {
+			continue
+		}
+
+		var bestCycle *models.BillingCycle
+		var bestDiff float64 = 999999
+
+		for i, c := range cycles {
+			if c.BankTransactionID != nil && *c.BankTransactionID != "" || c.ExpectedAmount == nil {
+				continue
+			}
+
+			if len(c.ExpectedBillDate) < 10 {
+				continue
+			}
+			billDate, errB := time.Parse("2006-01-02", c.ExpectedBillDate[:10])
+			if errB != nil {
+				continue
+			}
+
+			dayDiff := int(btDate.Sub(billDate).Hours() / 24)
+			if dayDiff < -14 || dayDiff > 14 {
+				continue
+			}
+
+			amtDiff := math.Abs(btAmt - *c.ExpectedAmount)
+			if amtDiff < 0.05 {
+				bestCycle = &cycles[i]
+				bestDiff = amtDiff
+				break
+			} else if amtDiff < 2.0 && amtDiff < bestDiff {
+				bestCycle = &cycles[i]
+				bestDiff = amtDiff
+			}
+		}
+
+		if bestCycle != nil {
+			if err := s.db.LinkBankPaymentToCycle(bestCycle.ID, bt.id); err == nil {
+				s.db.Exec(`UPDATE transactions SET category_id = 'cat-credit-card' WHERE id = ?`, bt.id)
+				matchedCount++
+				btIDStr := bt.id
+				bestCycle.BankTransactionID = &btIDStr
+			}
+		} else {
+			// Payee-based auto assignment
+			payeeLower := strings.ToLower(bt.payee)
+			if strings.Contains(bt.payee, "לאומי מאסטרקרד") || strings.Contains(payeeLower, "max") || strings.Contains(bt.payee, "מקס") {
+				s.db.LinkBankPaymentToAccount(bt.id, "EXTERNAL")
+				s.db.Exec(`UPDATE transactions SET category_id = 'cat-credit-card' WHERE id = ?`, bt.id)
+				matchedCount++
+			} else if strings.Contains(bt.payee, "ישראכרט") {
+				// Link to Isracard CC Account (SAP corporate)
+				for _, acc := range accounts {
+					if acc.Institution == "Isracard" || strings.Contains(acc.Name, "SAP") {
+						s.db.LinkBankPaymentToAccount(bt.id, acc.ID)
+						s.db.Exec(`UPDATE transactions SET category_id = 'cat-credit-card' WHERE id = ?`, bt.id)
+						matchedCount++
+						break
+					}
+				}
+			} else if strings.Contains(bt.payee, "כרטיסי אשראי") || strings.Contains(bt.payee, "כאל") || strings.Contains(payeeLower, "cal") {
+				// Link to Visa CAL CC Account (Bttr)
+				for _, acc := range accounts {
+					if acc.Institution == "Visa CAL" || strings.Contains(acc.Name, "Bttr") {
+						s.db.LinkBankPaymentToAccount(bt.id, acc.ID)
+						s.db.Exec(`UPDATE transactions SET category_id = 'cat-credit-card' WHERE id = ?`, bt.id)
+						matchedCount++
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return matchedCount, nil
+}
+

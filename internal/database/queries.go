@@ -62,7 +62,7 @@ func (db *DB) UpdateAccount(id string, acc *models.Account) error {
 func (db *DB) GetAccounts() ([]models.Account, error) {
 	rows, err := db.Query(`
 		SELECT a.id, a.name, a.account_type, a.institution, a.account_number_last4, a.currency, a.opening_balance, a.credit_limit, a.billing_day_primary, a.billing_day_secondary, a.created_at, a.updated_at,
-		       COALESCE(a.opening_balance + SUM(t.amount), a.opening_balance) as current_balance
+		       COALESCE(a.opening_balance + COALESCE(SUM(t.amount), 0) + COALESCE((SELECT SUM(ABS(bt.amount)) FROM transactions bt WHERE bt.linked_account_id = a.id), 0), a.opening_balance) as current_balance
 		FROM accounts a
 		LEFT JOIN transactions t ON a.id = t.account_id
 		GROUP BY a.id
@@ -88,7 +88,7 @@ func (db *DB) GetAccountByID(id string) (*models.Account, error) {
 	var a models.Account
 	err := db.QueryRow(`
 		SELECT a.id, a.name, a.account_type, a.institution, a.account_number_last4, a.currency, a.opening_balance, a.credit_limit, a.billing_day_primary, a.billing_day_secondary, a.created_at, a.updated_at,
-		       COALESCE(a.opening_balance + SUM(t.amount), a.opening_balance) as current_balance
+		       COALESCE(a.opening_balance + COALESCE(SUM(t.amount), 0) + COALESCE((SELECT SUM(ABS(bt.amount)) FROM transactions bt WHERE bt.linked_account_id = a.id), 0), a.opening_balance) as current_balance
 		FROM accounts a
 		LEFT JOIN transactions t ON a.id = t.account_id
 		WHERE a.id = ?
@@ -278,12 +278,12 @@ func (db *DB) CreateTransaction(t *models.Transaction) error {
 			id, account_id, date, amount, currency, original_amount, original_currency,
 			billing_date, billing_day, current_installment, total_installments, payee_raw, payee_cleaned, category_id,
 			suggested_category_he, suggested_category_en, suggested_category_type, notes,
-			import_hash, is_reviewed, categorized_by, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			import_hash, is_reviewed, categorized_by, linked_account_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, t.ID, t.AccountID, t.Date, t.Amount, t.Currency, t.OriginalAmount, t.OriginalCurrency,
 		t.BillingDate, t.BillingDay, t.CurrentInstallment, t.TotalInstallments, t.PayeeRaw, t.PayeeCleaned, t.CategoryID,
 		t.SuggestedCategoryHE, t.SuggestedCategoryEN, t.SuggestedCategoryType, t.Notes,
-		t.ImportHash, t.IsReviewed, t.CategorizedBy, t.CreatedAt, t.UpdatedAt)
+		t.ImportHash, t.IsReviewed, t.CategorizedBy, t.LinkedAccountID, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
@@ -319,7 +319,7 @@ func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int,
 		       t.current_installment, t.total_installments,
 		       t.payee_raw, t.payee_cleaned, t.category_id, c.name_he, c.name_en,
 		       t.suggested_category_he, t.suggested_category_en, t.suggested_category_type,
-		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.created_at, t.updated_at
+		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.linked_account_id, t.created_at, t.updated_at
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
@@ -448,7 +448,7 @@ func (db *DB) QueryTransactions(f TransactionFilter) ([]models.Transaction, int,
 			&t.CurrentInstallment, &t.TotalInstallments,
 			&t.PayeeRaw, &t.PayeeCleaned, &t.CategoryID, &t.CategoryNameHE, &t.CategoryNameEN,
 			&t.SuggestedCategoryHE, &t.SuggestedCategoryEN, &t.SuggestedCategoryType,
-			&t.Notes, &t.ImportHash, &t.IsReviewed, &t.CategorizedBy, &t.CreatedAt, &t.UpdatedAt,
+			&t.Notes, &t.ImportHash, &t.IsReviewed, &t.CategorizedBy, &t.LinkedAccountID, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -509,7 +509,7 @@ func (db *DB) GetTransactionByID(id string) (*models.Transaction, error) {
 		       t.current_installment, t.total_installments,
 		       t.payee_raw, t.payee_cleaned, t.category_id, c.name_he, c.name_en,
 		       t.suggested_category_he, t.suggested_category_en, t.suggested_category_type,
-		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.created_at, t.updated_at
+		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.linked_account_id, t.created_at, t.updated_at
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
@@ -520,7 +520,7 @@ func (db *DB) GetTransactionByID(id string) (*models.Transaction, error) {
 		&t.CurrentInstallment, &t.TotalInstallments,
 		&t.PayeeRaw, &t.PayeeCleaned, &t.CategoryID, &t.CategoryNameHE, &t.CategoryNameEN,
 		&t.SuggestedCategoryHE, &t.SuggestedCategoryEN, &t.SuggestedCategoryType,
-		&t.Notes, &t.ImportHash, &t.IsReviewed, &t.CategorizedBy, &t.CreatedAt, &t.UpdatedAt,
+		&t.Notes, &t.ImportHash, &t.IsReviewed, &t.CategorizedBy, &t.LinkedAccountID, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -718,11 +718,11 @@ func (db *DB) GetCycleTransactions(cycleID string) ([]models.Transaction, error)
 		       t.current_installment, t.total_installments,
 		       t.payee_raw, t.payee_cleaned, t.category_id, c.name_he, c.name_en,
 		       t.suggested_category_he, t.suggested_category_en, t.suggested_category_type,
-		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.created_at, t.updated_at
+		       t.notes, t.import_hash, t.is_reviewed, t.categorized_by, t.linked_account_id, t.created_at, t.updated_at
 		FROM transactions t
-		JOIN billing_cycle_transactions bct ON t.id = bct.transaction_id
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
+		JOIN billing_cycle_transactions bct ON t.id = bct.transaction_id
 		WHERE bct.billing_cycle_id = ?
 		ORDER BY t.date ASC
 	`, cycleID)
@@ -740,7 +740,7 @@ func (db *DB) GetCycleTransactions(cycleID string) ([]models.Transaction, error)
 			&t.CurrentInstallment, &t.TotalInstallments,
 			&t.PayeeRaw, &t.PayeeCleaned, &t.CategoryID, &t.CategoryNameHE, &t.CategoryNameEN,
 			&t.SuggestedCategoryHE, &t.SuggestedCategoryEN, &t.SuggestedCategoryType,
-			&t.Notes, &t.ImportHash, &t.IsReviewed, &t.CategorizedBy, &t.CreatedAt, &t.UpdatedAt,
+			&t.Notes, &t.ImportHash, &t.IsReviewed, &t.CategorizedBy, &t.LinkedAccountID, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -786,14 +786,86 @@ func (db *DB) LinkBankPaymentToCycle(cycleID, bankTxID string) error {
 		SET bank_transaction_id = ?, paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, bankTxID, bankAmount, status, cycleID)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`
+		UPDATE transactions
+		SET linked_account_id = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, bc.AccountID, bankTxID)
 	return err
 }
 
 func (db *DB) UnlinkBankPaymentFromCycle(cycleID string) error {
+	var bankTxID *string
+	_ = db.QueryRow("SELECT bank_transaction_id FROM billing_cycles WHERE id = ?", cycleID).Scan(&bankTxID)
+
 	_, err := db.Exec(`
 		UPDATE billing_cycles
 		SET bank_transaction_id = NULL, paid_amount = NULL, status = 'OPEN', updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, cycleID)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if bankTxID != nil && *bankTxID != "" {
+		_, _ = db.Exec(`
+			UPDATE transactions
+			SET linked_account_id = NULL, updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+		`, *bankTxID)
+	}
+	return nil
+}
+
+func (db *DB) LinkBankPaymentToAccount(bankTxID string, targetAccountID string) error {
+	var target *string
+	if targetAccountID != "" && targetAccountID != "NONE" {
+		target = &targetAccountID
+	}
+
+	_, err := db.Exec(`
+		UPDATE transactions
+		SET linked_account_id = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, target, bankTxID)
+	if err != nil {
+		return err
+	}
+
+	if target == nil || *target == "EXTERNAL" {
+		_, _ = db.Exec(`
+			UPDATE billing_cycles
+			SET bank_transaction_id = NULL, paid_amount = NULL, status = 'OPEN', updated_at = CURRENT_TIMESTAMP
+			WHERE bank_transaction_id = ?
+		`, bankTxID)
+		return nil
+	}
+
+	var bankTxDate string
+	_ = db.QueryRow("SELECT date FROM transactions WHERE id = ?", bankTxID).Scan(&bankTxDate)
+
+	if bankTxDate != "" {
+		var cycleID string
+		errCycle := db.QueryRow(`
+			SELECT id FROM billing_cycles
+			WHERE account_id = ?
+			  AND date(?) BETWEEN date(cycle_start_date, '-15 days') AND date(cycle_end_date, '+15 days')
+			ORDER BY ABS(julianday(expected_bill_date) - julianday(?)) ASC
+			LIMIT 1
+		`, targetAccountID, bankTxDate, bankTxDate).Scan(&cycleID)
+
+		if errCycle == nil && cycleID != "" {
+			_ = db.LinkBankPaymentToCycle(cycleID, bankTxID)
+		}
+	}
+
+	return nil
+}
+
+func (db *DB) UnlinkBankPayment(bankTxID string) error {
+	return db.LinkBankPaymentToAccount(bankTxID, "")
 }

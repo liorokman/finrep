@@ -112,7 +112,8 @@ func (s *ReportService) GetNetWorthTrend(startDate, endDate string) ([]NetWorthP
 		SELECT strftime('%Y-%m', t.date) as month,
 		       SUM(CASE WHEN a.account_type = 'BANK' AND t.amount >= 0 THEN t.amount ELSE 0 END) as bank_in,
 		       SUM(CASE WHEN a.account_type = 'BANK' AND t.amount < 0 THEN t.amount ELSE 0 END) as bank_out,
-		       SUM(CASE WHEN a.account_type = 'CREDIT_CARD' THEN t.amount ELSE 0 END) as cc_flow
+		       SUM(CASE WHEN a.account_type = 'CREDIT_CARD' THEN t.amount ELSE 0 END) as cc_flow,
+		       SUM(CASE WHEN a.account_type = 'BANK' AND t.linked_account_id IS NOT NULL AND t.linked_account_id != 'EXTERNAL' THEN ABS(t.amount) ELSE 0 END) as cc_payments
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		GROUP BY month
@@ -129,14 +130,13 @@ func (s *ReportService) GetNetWorthTrend(startDate, endDate string) ([]NetWorthP
 
 	for rows.Next() {
 		var month string
-		var bankIn, bankOut, ccFlow float64
-		if err := rows.Scan(&month, &bankIn, &bankOut, &ccFlow); err != nil {
+		var bankIn, bankOut, ccFlow, ccPayments float64
+		if err := rows.Scan(&month, &bankIn, &bankOut, &ccFlow, &ccPayments); err != nil {
 			return nil, err
 		}
 		runningAssets += bankIn + bankOut // bankOut is already negative
-		// CC spending increases liabilities, CC payments reduce them
-		// ccFlow is negative for spending (charge), positive for payment
-		runningLiabilities += -ccFlow // negative spending → positive liability increase
+		// CC spending (ccFlow negative) increases liabilities. Assigned bank payments (ccPayments positive) settle liabilities.
+		runningLiabilities += -ccFlow - ccPayments
 		if runningLiabilities < 0 {
 			runningLiabilities = 0
 		}
@@ -192,6 +192,7 @@ func (s *ReportService) GetCashFlowSummary(accountID, startDate, endDate string)
 		       SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
 		FROM transactions
 		WHERE 1=1
+		  AND (linked_account_id IS NULL OR linked_account_id = 'EXTERNAL')
 		  AND id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 	`
 	var args []interface{}
@@ -246,6 +247,7 @@ func (s *ReportService) GetCategoryDonut(accountID, startDate, endDate string) (
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = 'EXTERNAL')
 		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 	`
 	var args []interface{}
@@ -306,6 +308,7 @@ func (s *ReportService) GetBudgetVsActual(accountID, month string) ([]BudgetVsAc
 		SELECT c.id, c.name_en, COALESCE(c.monthly_budget, 0), COALESCE(SUM(ABS(t.amount)), 0)
 		FROM categories c
 		LEFT JOIN transactions t ON c.id = t.category_id AND t.amount < 0
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = 'EXTERNAL')
 		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		  AND strftime('%Y-%m', t.date) = ?
 	`
@@ -340,6 +343,7 @@ func (s *ReportService) GetSubscriptions(accountID string) ([]SubscriptionItem, 
 		FROM transactions t
 		LEFT JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = 'EXTERNAL')
 		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 	`
 	var args []interface{}
@@ -427,8 +431,10 @@ func (s *ReportService) GetAnomalies() ([]AnomalyItem, error) {
 	rows, err := s.db.Query(`
 		SELECT id, date, payee_raw, ABS(amount)
 		FROM transactions
-		WHERE ABS(amount) > 1000
+		WHERE amount < 0
+		  AND (linked_account_id IS NULL OR linked_account_id = 'EXTERNAL')
 		  AND id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
+		  AND ABS(amount) > 1000
 		ORDER BY date DESC
 		LIMIT 10
 	`)
@@ -509,6 +515,7 @@ func (s *ReportService) GetMoMHeatmap(accountID, startDate, endDate string) ([]M
 		FROM transactions t
 		JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = 'EXTERNAL')
 		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		  AND strftime('%Y-%m', t.date) >= ?
 		  AND strftime('%Y-%m', t.date) <= ?
@@ -601,6 +608,7 @@ func (s *ReportService) GetSankeyFlow() ([]SankeyLink, error) {
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
 		WHERE t.amount < 0
+		  AND (t.linked_account_id IS NULL OR t.linked_account_id = 'EXTERNAL')
 		  AND t.id NOT IN (SELECT bank_transaction_id FROM billing_cycles WHERE bank_transaction_id IS NOT NULL)
 		  AND strftime('%Y-%m', t.date) = strftime('%Y-%m', 'now')
 		GROUP BY source, target

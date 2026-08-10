@@ -81,7 +81,7 @@ func TestReportService_NewReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAnomalies failed: %v", err)
 	}
-	if len(anoms) != 2 {
-		t.Errorf("expected 2 anomalies for transactions with ABS(amount) > 1000, got %d", len(anoms))
+	if len(anoms) != 1 {
+		t.Errorf("expected 1 anomaly for transactions with ABS(amount) > 1000, got %d", len(anoms))
 	}
 }

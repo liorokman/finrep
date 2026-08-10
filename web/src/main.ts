@@ -37,6 +37,7 @@ interface Transaction {
   suggested_category_type?: string;
   current_installment?: number;
   total_installments?: number;
+  linked_account_id?: string;
   is_reviewed: boolean;
   billing_date?: string;
   billing_day?: number;
@@ -1281,11 +1282,24 @@ function renderTransactionTableRows(txs: Transaction[]) {
             <th class="py-3 px-4">Payee / Merchant</th>
             <th class="py-3 px-4">Installment</th>
             <th class="py-3 px-4">Category / AI Suggestion</th>
+            <th class="py-3 px-4">CC Assignment</th>
             <th class="py-3 px-4 text-right">Amount</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-800/60">
-          ${txs.map(t => `
+          ${txs.map(t => {
+            const ccAccounts = accountsList.filter(a => a.account_type === 'CREDIT_CARD');
+            const payeeLower = (t.payee_raw || '').toLowerCase();
+            const catEnLower = (t.category_name_en || '').toLowerCase();
+            const isCCCategory = t.category_id === 'cat-credit-card' ||
+              t.category_id === 'cat-transfers' ||
+              catEnLower.includes('credit card') ||
+              (t.category_name_he || '').includes('כרטיס אשראי') ||
+              payeeLower.includes('כרטיס') || payeeLower.includes('cal') || payeeLower.includes('isracard') || payeeLower.includes('leumi') ||
+              Boolean(t.linked_account_id);
+            const isBankDebit = (t.amount ?? 0) < 0 && isCCCategory;
+
+            return `
             <tr class="hover:bg-slate-900/40 transition">
               <td class="py-3 px-4 text-slate-300 whitespace-nowrap font-mono">${t.date}</td>
               <td class="py-3 px-4 text-slate-400">${t.account_name || 'Account'}</td>
@@ -1320,11 +1334,25 @@ function renderTransactionTableRows(txs: Transaction[]) {
                   </select>
                 `}
               </td>
+              <td class="py-3 px-4">
+                ${isBankDebit ? `
+                  <select class="tx-cc-assign-select bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-brand-500 cursor-pointer" data-txid="${t.id}">
+                    <option value="" ${!t.linked_account_id ? 'selected' : ''}>⚠️ Unassigned CC Payment</option>
+                    <option value="EXTERNAL" ${t.linked_account_id === 'EXTERNAL' ? 'selected' : ''}>💳 External / Unimported CC</option>
+                    ${ccAccounts.map(a => `<option value="${a.id}" ${t.linked_account_id === a.id ? 'selected' : ''}>🔗 Paid to ${a.name}</option>`).join('')}
+                  </select>
+                ` : t.linked_account_id === 'EXTERNAL' ? `
+                  <span class="px-2 py-1 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-bold">💳 External CC</span>
+                ` : t.linked_account_id ? `
+                  <span class="px-2 py-1 rounded bg-brand-500/15 border border-brand-500/30 text-brand-300 text-[10px] font-bold">🔗 Linked to CC</span>
+                ` : '-'}
+              </td>
               <td class="py-3 px-4 text-right font-bold font-mono ${(t.amount ?? 0) < 0 ? 'text-rose-400' : 'text-emerald-400'}">
                 ${formatMoney(t.amount)}
               </td>
             </tr>
-          `).join('')}
+          `;
+          }).join('')}
         </tbody>
       </table>
     </div>
@@ -2223,9 +2251,14 @@ function renderBillingCyclesView() {
           <h2 class="text-2xl font-bold text-white">🔗 Credit Card Billing Cycles</h2>
           <p class="text-xs text-slate-400 mt-1">Group credit card transactions into billing cycles, monitor expected billing amounts, and match bank payments.</p>
         </div>
-        <button id="btn-open-generate-modal" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-lg shadow-brand-500/20 transition flex items-center gap-1.5 self-start sm:self-auto">
-          <span>⚡ Generate Billing Cycles</span>
-        </button>
+        <div class="flex items-center gap-2">
+          <button id="btn-auto-match-cc" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-lg shadow-emerald-500/20 transition flex items-center gap-1.5">
+            <span>⚡ Auto-Match Payments</span>
+          </button>
+          <button id="btn-open-generate-modal" class="bg-brand-600 hover:bg-brand-500 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-lg shadow-brand-500/20 transition flex items-center gap-1.5">
+            <span>⚡ Generate Billing Cycles</span>
+          </button>
+        </div>
       </div>
 
       <!-- Filters & Stats Bar -->
@@ -2272,6 +2305,8 @@ function renderBillingCyclesView() {
                   <th class="py-3 px-4">Cycle Period</th>
                   <th class="py-3 px-4">Expected Bill Date</th>
                   <th class="py-3 px-4 text-right">Expected Amount</th>
+                  <th class="py-3 px-4 text-right">Paid Amount</th>
+                  <th class="py-3 px-4 text-right">Difference</th>
                   <th class="py-3 px-4">Status</th>
                   <th class="py-3 px-4 text-right">Actions</th>
                 </tr>
@@ -2289,13 +2324,26 @@ function renderBillingCyclesView() {
                     statusBadge = `<span class="px-2 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-400 text-[10px] font-medium">OPEN</span>`;
                   }
 
+                  const exp = c.expected_amount || 0;
+                  const paid = c.paid_amount || 0;
+                  const diff = exp - paid;
+                  const isZeroed = c.status === 'PAID' || Math.abs(diff) < 0.01;
+
                   return `
                     <tr class="hover:bg-slate-900/50 transition">
                       <td class="py-3 px-4 font-bold text-white">${c.account_name || c.account_id}</td>
                       <td class="py-3 px-4 text-slate-400 font-mono">Day ${c.billing_day}</td>
                       <td class="py-3 px-4 text-slate-300 font-mono">${c.cycle_start_date} → ${c.cycle_end_date}</td>
                       <td class="py-3 px-4 text-slate-300 font-mono">${c.expected_bill_date}</td>
-                      <td class="py-3 px-4 text-right font-bold font-mono text-rose-400">${formatMoney(c.expected_amount)}</td>
+                      <td class="py-3 px-4 text-right font-bold font-mono text-rose-400">${formatMoney(exp)}</td>
+                      <td class="py-3 px-4 text-right font-bold font-mono text-emerald-400">${paid > 0 ? formatMoney(paid) : '-'}</td>
+                      <td class="py-3 px-4 text-right font-mono">
+                        ${isZeroed ? `
+                          <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[11px] font-bold border border-emerald-500/30">₪0.00 ✓</span>
+                        ` : `
+                          <span class="text-amber-400 font-semibold">${formatMoney(diff)}</span>
+                        `}
+                      </td>
                       <td class="py-3 px-4">${statusBadge}</td>
                       <td class="py-3 px-4 text-right">
                         <div class="flex items-center justify-end gap-1.5">
@@ -3509,6 +3557,46 @@ function attachEvents() {
         showToast('Failed to update category', 'error');
       }
     });
+  });
+
+  // ---- Inline Credit Card Payment Assignment Selector ----
+  document.querySelectorAll('.tx-cc-assign-select').forEach(select => {
+    select.addEventListener('change', async (e) => {
+      const el = e.currentTarget as HTMLSelectElement;
+      const txid = el.getAttribute('data-txid');
+      const val = el.value || null;
+      if (!txid) return;
+
+      const res = await fetch(`/api/v1/transactions/${txid}/assign-cc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credit_card_account_id: val,
+        }),
+      });
+
+      if (res.ok) {
+        await loadData();
+        renderApp();
+        showToast(val ? 'CC payment assigned' : 'CC payment assignment cleared', 'success');
+      } else {
+        showToast('Failed to assign CC payment', 'error');
+      }
+    });
+  });
+
+  // ---- Auto-Match CC Payments Button ----
+  document.getElementById('btn-auto-match-cc')?.addEventListener('click', async () => {
+    showToast('Running auto-match on credit card payments...', 'info');
+    const res = await fetch('/api/v1/reconciliation/auto-match', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      await loadData();
+      renderApp();
+      showToast(data.message || 'Auto-match completed!', 'success');
+    } else {
+      showToast('Auto-match failed', 'error');
+    }
   });
 
   // ---- Widget-level Account Filters ----

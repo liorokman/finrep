@@ -89,6 +89,7 @@ type Transaction struct {
 	ImportHash            string        `json:"import_hash"`
 	IsReviewed            bool          `json:"is_reviewed"`
 	CategorizedBy         CategorizedBy `json:"categorized_by"`
+	LinkedAccountID       *string       `json:"linked_account_id,omitempty"`
 	CreatedAt             time.Time     `json:"created_at"`
 	UpdatedAt             time.Time     `json:"updated_at"`
 

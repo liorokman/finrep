@@ -226,6 +226,22 @@ var migrations = []Migration{
 		CREATE INDEX IF NOT EXISTS idx_transactions_billing_date ON transactions(billing_date);
 		`,
 	},
+	{
+		Version:     4,
+		Description: "Add linked_account_id to transactions for CC payment assignment",
+		SQL: `
+		ALTER TABLE transactions ADD COLUMN linked_account_id TEXT DEFAULT NULL;
+		CREATE INDEX IF NOT EXISTS idx_transactions_linked_account ON transactions(linked_account_id);
+		`,
+	},
+	{
+		Version:     5,
+		Description: "Seed default Credit Card Payment category",
+		SQL: `
+		INSERT OR IGNORE INTO categories (id, name_he, name_en, color_hex, icon, category_type) VALUES
+			('cat-credit-card', 'חיוב כרטיס אשראי', 'Credit Card Payment', '#6366F1', 'credit-card', 'TRANSFER');
+		`,
+	},
 }
 
 // RunMigrations applies all pending schema DDL migrations
