@@ -65,7 +65,9 @@ func (p *LeumiParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 		}
 
 		// Ignore total summary rows (except billing date section headers processed above)
-		if strings.Contains(line, "סה\"כ") || strings.Contains(line, "כ חיוב לחשבון\"סה") || strings.Contains(line, "כ\"סה") ||
+		if strings.Contains(line, "סה\"כ") || strings.Contains(line, "סה כ") || strings.Contains(line, "סה\"") ||
+			strings.Contains(line, "חיוב לחשבון") || strings.Contains(line, "חיוב ל ח שבון") || strings.Contains(line, "חיוב ל חשבון") ||
+			strings.Contains(line, "חיוב ל ח") || strings.Contains(line, "כ חיוב ל") || strings.Contains(line, "כ חיוב לחשבון") ||
 			strings.Contains(line, "התחייבויות בכרטיס") || strings.Contains(line, "תוקף מסגרת") ||
 			strings.Contains(line, "להלן פרוט החיובים") || strings.Contains(line, "הערות/תאריך") {
 			continue
@@ -129,20 +131,6 @@ func (p *LeumiParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			CardSuffix:         currentCardSuffix,
 			Provider:           ProviderLeumi,
 		})
-	}
-
-	if p.LocalAI != nil && len(txs) > 0 {
-		payees := make([]string, len(txs))
-		for i, tx := range txs {
-			payees[i] = tx.Payee
-		}
-		if fixedMap, err := p.LocalAI.FixPayeeSpacesBatch(payees); err == nil && len(fixedMap) > 0 {
-			for i := range txs {
-				if fixed, ok := fixedMap[txs[i].Payee]; ok && fixed != "" {
-					txs[i].Payee = fixed
-				}
-			}
-		}
 	}
 
 	return txs, nil

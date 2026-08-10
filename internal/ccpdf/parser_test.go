@@ -172,3 +172,25 @@ func TestDescriptionCurrencySymbolCleanup(t *testing.T) {
 		t.Errorf("CleanPayeeText failed:\nExpected: %s\nGot:      %s", expected, actual)
 	}
 }
+
+func TestLeumiSummaryLineFiltering(t *testing.T) {
+	lines := []string{
+		"בתאריך 10/02/22",
+		"סה\"כ חיוב ל ח שבון 10-946-39213588 בתאריך 10/02/22 : 3,629.53 ₪",
+		"10/02/22 10/02/22 XOBYAP ₪ 260.00",
+	}
+	data := &PDFData{FilePath: "test_leumi.pdf", FullText: strings.Join(lines, "\n"), Lines: lines}
+	parser := &LeumiParser{}
+
+	txs, err := parser.Parse(data)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(txs) != 1 {
+		t.Fatalf("expected 1 transaction (skipping summary row), got %d", len(txs))
+	}
+	if txs[0].Payee != "XOBYAP" {
+		t.Errorf("expected transaction payee XOBYAP, got %s", txs[0].Payee)
+	}
+}

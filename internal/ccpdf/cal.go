@@ -175,20 +175,6 @@ func (p *CalParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 		})
 	}
 
-	if p.LocalAI != nil && len(txs) > 0 {
-		payees := make([]string, len(txs))
-		for i, tx := range txs {
-			payees[i] = tx.Payee
-		}
-		if fixedMap, err := p.LocalAI.FixPayeeSpacesBatch(payees); err == nil && len(fixedMap) > 0 {
-			for i := range txs {
-				if fixed, ok := fixedMap[txs[i].Payee]; ok && fixed != "" {
-					txs[i].Payee = fixed
-				}
-			}
-		}
-	}
-
 	return txs, nil
 }
 
