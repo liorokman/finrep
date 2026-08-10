@@ -121,7 +121,7 @@ func (p *CalParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 		}
 
 		isReimbursementLine := strings.Contains(line, "חיוב תקציב") || strings.Contains(line, "תקציב סאפ") ||
-			strings.Contains(line, "חיוב בתקציב") || strings.Contains(line, "זיכוי תקציב") || (origAmount < 0)
+			strings.Contains(line, "חיוב בתקציב") || strings.Contains(line, "זיכוי תקציב") || strings.Contains(line, "החזר תקציב")
 
 		if origAmount > 0 {
 			origAmount = -origAmount

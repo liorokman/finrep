@@ -28,6 +28,11 @@ func (db *DB) CreateAccount(acc *models.Account) error {
 	acc.CreatedAt = now
 	acc.UpdatedAt = now
 
+	if acc.AccountType == models.AccountTypeBank || acc.AccountType == "BANK" {
+		acc.BillingDayPrimary = nil
+		acc.BillingDaySecondary = nil
+	}
+
 	_, err := db.Exec(`
 		INSERT INTO accounts (id, name, account_type, institution, account_number_last4, currency, opening_balance, credit_limit, billing_day_primary, billing_day_secondary, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -36,6 +41,11 @@ func (db *DB) CreateAccount(acc *models.Account) error {
 }
 
 func (db *DB) UpdateAccount(id string, acc *models.Account) error {
+	if acc.AccountType == models.AccountTypeBank || acc.AccountType == "BANK" {
+		acc.BillingDayPrimary = nil
+		acc.BillingDaySecondary = nil
+	}
+
 	_, err := db.Exec(`
 		UPDATE accounts
 		SET name = ?, account_type = ?, institution = ?, account_number_last4 = ?,

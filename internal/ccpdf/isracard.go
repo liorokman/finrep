@@ -52,10 +52,20 @@ func (p *IsracardParser) Parse(data *PDFData) ([]ParsedTransaction, error) {
 			}
 		}
 
-		// Skip headers and summary lines
+		// Skip headers, interest rate disclosures, credit limit tables, and summary lines
 		if strings.Contains(line, "סה\"כ") || strings.Contains(line, "מסגרת הכרטיס") ||
 			strings.Contains(line, "רכישות בחו") || strings.Contains(line, "שעורי ריבית") ||
-			strings.Contains(line, "לתאריך") || strings.Contains(line, "סך הכל") {
+			strings.Contains(line, "לתאריך") || strings.Contains(line, "סך הכל") ||
+			strings.Contains(line, "חיוב לתאריך") || strings.Contains(line, "חיוב ל ת ארי") ||
+			strings.Contains(line, "חיוב ל תארי") || strings.Contains(line, "חיובלתארי") ||
+			strings.Contains(line, "êכ חיוב") || strings.Contains(line, "êכחיוב") ||
+			strings.Contains(line, "כ חיוב") || strings.Contains(line, "כחיוב") ||
+			strings.Contains(line, "ריבי") || strings.Contains(line, "ריבית") ||
+			strings.Contains(line, "קבו ע") || strings.Contains(line, "מ ש תנ") ||
+			strings.Contains(line, "א שר אי") || strings.Contains(line, "קרדי ט") ||
+			strings.Contains(line, "קרדיט") || strings.Contains(line, "שעור") ||
+			strings.Contains(line, "שיעור") || strings.Contains(line, "פרו ע") ||
+			strings.Contains(line, "פרעו") {
 			continue
 		}
 

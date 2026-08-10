@@ -1,8 +1,10 @@
 package ccpdf
 
 import (
+	"bytes"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -21,6 +23,20 @@ type PDFData struct {
 // ExtractTextFromPDF extracts structured text lines from a PDF file
 func ExtractTextFromPDF(filePath string) (*PDFData, error) {
 	r, err := pdf.Open(filePath)
+	if err != nil {
+		// Fallback: Handle PDFs with trailing non-PDF data (e.g. HTML error responses appended by bank web portals)
+		data, readErr := os.ReadFile(filePath)
+		if readErr == nil {
+			if eofIdx := bytes.LastIndex(data, []byte("%%EOF")); eofIdx != -1 {
+				trimmed := data[:eofIdx+len("%%EOF")]
+				cleanReader, cleanErr := pdf.NewReader(bytes.NewReader(trimmed), int64(len(trimmed)))
+				if cleanErr == nil {
+					r = cleanReader
+					err = nil
+				}
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PDF file '%s': %w", filePath, err)
 	}
@@ -49,13 +65,14 @@ func extractLinesFromContent(r *pdf.Reader) ([]string, string) {
 		type textItem struct {
 			X float64
 			Y float64
+			W float64
 			S string
 		}
 
 		var items []textItem
 		for _, t := range content.Text {
 			if strings.TrimSpace(t.S) != "" || t.S == " " {
-				items = append(items, textItem{X: t.X, Y: t.Y, S: t.S})
+				items = append(items, textItem{X: t.X, Y: t.Y, W: t.W, S: t.S})
 			}
 		}
 
@@ -98,9 +115,13 @@ func extractLinesFromContent(r *pdf.Reader) ([]string, string) {
 				if i > 0 {
 					prev := row[i-1]
 					if !strings.HasSuffix(prev.S, " ") && !strings.HasPrefix(item.S, " ") {
-						estimatedPrevWidth := float64(len([]rune(prev.S))) * 3.5
-						gap := item.X - (prev.X + estimatedPrevWidth)
-						if gap > 1.5 {
+						prevWidth := prev.W
+						if prevWidth <= 0 {
+							prevWidth = float64(len([]rune(prev.S))) * 4.5
+						}
+						prevRightEdge := prev.X + prevWidth
+						gap := item.X - prevRightEdge
+						if gap > 4.0 {
 							lineBuilder.WriteString(" ")
 						}
 					}
@@ -151,12 +172,43 @@ var (
 	strayCurrencyRegex = regexp.MustCompile(`(?:^|\s+)[₪$€]+(?:\s+[₪$€]+)*(?:\s+|$)`)
 )
 
+// CollapseSpacedOutLetters merges artificially space-separated single letters and font tracking fragments
+func CollapseSpacedOutLetters(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) <= 1 {
+		return s
+	}
+
+	var res []string
+	var cur strings.Builder
+
+	for _, f := range fields {
+		cleanF := strings.Trim(f, ".")
+		if len([]rune(cleanF)) == 1 || strings.HasPrefix(f, ".") {
+			cur.WriteString(f)
+		} else {
+			if cur.Len() > 0 {
+				res = append(res, cur.String())
+				cur.Reset()
+			}
+			res = append(res, f)
+		}
+	}
+	if cur.Len() > 0 {
+		res = append(res, cur.String())
+	}
+	return strings.Join(res, " ")
+}
+
 // CleanPayeeText removes stray/duplicated currency symbols, leading/trailing numbers, and tabular artifacts from merchant names
 func CleanPayeeText(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return s
 	}
+
+	// Collapse artificially space-separated letters (e.g. "W W W .H AC KER BO XES.C" -> "WWW.HACKERBOXES.C")
+	s = CollapseSpacedOutLetters(s)
 
 	// Remove standalone currency symbols like "₪ ₪", "₪", "$", "€"
 	s = strayCurrencyRegex.ReplaceAllString(s, " ")

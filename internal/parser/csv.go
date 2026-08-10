@@ -223,6 +223,23 @@ func (p *CSVParser) StageCSV(accountID string, rawBytes []byte, preset *models.I
 			}
 		}
 
+		// Check Cutoff Date against billing date (or transaction date if billing date is unmapped)
+		if preset.CutoffDate != nil && *preset.CutoffDate != "" {
+			cutoff := strings.TrimSpace(*preset.CutoffDate)
+			checkDate := formattedDate
+			if billingDate != nil && *billingDate != "" {
+				checkDate = *billingDate
+			}
+			targetDate := checkDate
+			targetCutoff := cutoff
+			if len(targetCutoff) == 7 && len(targetDate) >= 7 {
+				targetDate = targetDate[:7]
+			}
+			if targetDate < targetCutoff {
+				continue
+			}
+		}
+
 		// Fallback to Account's primary billing day if billingDay is unmapped
 		if billingDay == nil {
 			if acc, err := p.db.GetAccountByID(accountID); err == nil && acc.BillingDayPrimary != nil {

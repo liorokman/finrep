@@ -172,3 +172,51 @@ func TestInBatchDuplicateOrdinals(t *testing.T) {
 		t.Fatalf("expected 3 distinct import hashes for identical in-batch rows, got h1=%s, h2=%s, h3=%s", h1, h2, h3)
 	}
 }
+
+func TestCutoffDateFiltering(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "finrep_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "test.db")
+	sqlDB, err := database.InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	db := database.New(sqlDB)
+	defer db.Close()
+
+	csvContent := `Date,Billing Date,Description,Amount
+2024-05-15,2024-05-10,Old Transaction,-100.00
+2024-06-01,2024-06-10,June Transaction,-200.00
+2024-07-04,2024-07-10,July Transaction,-300.00
+`
+
+	amtCol := "Amount"
+	bDateCol := "Billing Date"
+	cutoffStr := "2024-06"
+	preset := &models.ImportPreset{
+		HasHeader:         true,
+		DateFormat:        "YYYY-MM-DD",
+		DateColumn:        "Date",
+		BillingDateColumn: &bDateCol,
+		PayeeColumn:       "Description",
+		AmountColumn:      &amtCol,
+		CutoffDate:        &cutoffStr,
+	}
+
+	p := NewCSVParser(db)
+	staged, err := p.StageCSV("acc_cutoff_test", []byte(csvContent), preset)
+	if err != nil {
+		t.Fatalf("StageCSV failed: %v", err)
+	}
+
+	if staged.PassedCount != 2 {
+		t.Fatalf("expected 2 passed transactions after YYYY-MM cutoff '2024-06', got %d", staged.PassedCount)
+	}
+	if staged.PassedTransactions[0].PayeeRaw != "June Transaction" || staged.PassedTransactions[1].PayeeRaw != "July Transaction" {
+		t.Errorf("unexpected staged transactions: %+v", staged.PassedTransactions)
+	}
+}

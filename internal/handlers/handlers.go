@@ -379,6 +379,9 @@ func (h *Handler) ImportCSV(c echo.Context) error {
 	if origCurrCol := c.FormValue("original_currency_column"); origCurrCol != "" {
 		preset.OriginalCurrencyColumn = &origCurrCol
 	}
+	if cutoffDate := c.FormValue("cutoff_date"); cutoffDate != "" {
+		preset.CutoffDate = &cutoffDate
+	}
 
 	p := parser.NewCSVParser(h.db)
 	txs, _, err := p.ParseCSV(accountID, data, preset)
@@ -528,6 +531,9 @@ func (h *Handler) StageCSV(c echo.Context) error {
 	}
 	if origCurrCol := c.FormValue("original_currency_column"); origCurrCol != "" {
 		preset.OriginalCurrencyColumn = &origCurrCol
+	}
+	if cutoffDate := c.FormValue("cutoff_date"); cutoffDate != "" {
+		preset.CutoffDate = &cutoffDate
 	}
 
 	p := parser.NewCSVParser(h.db)

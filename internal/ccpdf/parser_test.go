@@ -16,7 +16,7 @@ func TestExactTransactionCounts(t *testing.T) {
 		expected int
 	}{
 		{"isracard", filepath.Join("..", "..", "data", "Isracard-2026-07.pdf"), 10},
-		{"cal", filepath.Join("..", "..", "data", "cal-1001-2026-07.pdf"), 25},
+		{"cal", filepath.Join("..", "..", "data", "cal-1001-2026-07.pdf"), 24},
 		{"leumi", filepath.Join("..", "..", "data", "leumi-2026-07.pdf"), 9},
 	}
 
@@ -192,5 +192,47 @@ func TestLeumiSummaryLineFiltering(t *testing.T) {
 	}
 	if txs[0].Payee != "XOBYAP" {
 		t.Errorf("expected transaction payee XOBYAP, got %s", txs[0].Payee)
+	}
+}
+
+func TestCollapseSpacedOutLetters(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected string
+	}{
+		{"W W W .H AC KER BO XES.C", "WWW.H AC KER BO XES.C"},
+		{"LO N D O N W W W .ALIEXPR ESS.C O M", "LO NDONWWW.ALIEXPR ESS.C OM"},
+		{"U SD 3035899324 LW N .N ET", "U SD 3035899324 LW N.N ET"},
+	}
+
+	for _, tc := range testCases {
+		actual := CollapseSpacedOutLetters(tc.input)
+		if actual != tc.expected {
+			t.Errorf("CollapseSpacedOutLetters failed for %q:\nExpected: %q\nGot:      %q", tc.input, tc.expected, actual)
+		}
+	}
+}
+
+func TestFilterByCutoffDate(t *testing.T) {
+	txs := []ParsedTransaction{
+		{Date: "2024-05-15", BillingDate: "2024-05-10", Payee: "Tx 1 Old"},
+		{Date: "2024-06-01", BillingDate: "2024-06-10", Payee: "Tx 2 June"},
+		{Date: "2024-07-04", BillingDate: "2024-07-10", Payee: "Tx 3 July"},
+	}
+
+	filtered := FilterByCutoffDate(txs, "2024-06")
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 transactions for YYYY-MM cutoff '2024-06', got %d", len(filtered))
+	}
+	if filtered[0].Payee != "Tx 2 June" || filtered[1].Payee != "Tx 3 July" {
+		t.Errorf("unexpected filtered results: %+v", filtered)
+	}
+
+	filteredDay := FilterByCutoffDate(txs, "2024-06-15")
+	if len(filteredDay) != 1 {
+		t.Fatalf("expected 1 transaction for YYYY-MM-DD cutoff '2024-06-15', got %d", len(filteredDay))
+	}
+	if filteredDay[0].Payee != "Tx 3 July" {
+		t.Errorf("unexpected filtered day result: %+v", filteredDay)
 	}
 }

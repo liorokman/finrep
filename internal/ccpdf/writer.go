@@ -6,7 +6,39 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 )
+
+// FilterByCutoffDate filters out transactions whose billing date (or transaction date) is earlier than cutoff YYYY-MM or YYYY-MM-DD
+func FilterByCutoffDate(txs []ParsedTransaction, cutoff string) []ParsedTransaction {
+	cutoff = strings.TrimSpace(cutoff)
+	if cutoff == "" || len(txs) == 0 {
+		return txs
+	}
+
+	var filtered []ParsedTransaction
+	for _, tx := range txs {
+		bDate := tx.BillingDate
+		if bDate == "" {
+			bDate = tx.Date
+		}
+		if bDate == "" {
+			filtered = append(filtered, tx)
+			continue
+		}
+
+		targetDate := bDate
+		targetCutoff := cutoff
+		if len(targetCutoff) == 7 && len(targetDate) >= 7 {
+			targetDate = targetDate[:7]
+		}
+
+		if targetDate >= targetCutoff {
+			filtered = append(filtered, tx)
+		}
+	}
+	return filtered
+}
 
 // SortAndDeduplicateTransactions sorts transactions chronologically by Date and removes identical duplicate records
 func SortAndDeduplicateTransactions(txs []ParsedTransaction) []ParsedTransaction {

@@ -150,6 +150,7 @@ type ImportPreset struct {
 	PayeeColumn2             *string `json:"payee_column_2,omitempty"`
 	CategoryColumn           *string `json:"category_column,omitempty"`
 	NotesColumn              *string `json:"notes_column,omitempty"`
+	CutoffDate               *string `json:"cutoff_date,omitempty"`
 	HasHeader                bool    `json:"has_header"`
 }
 

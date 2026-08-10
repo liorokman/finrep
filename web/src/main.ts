@@ -237,6 +237,7 @@ function renderWidgetAccountSelector(id: string, currentValue: string) {
 }
 
 let showAddAccountModal = false;
+let editingAccount: Account | null = null;
 let showAddCategoryModal = false;
 let editingCategory: Category | null = null;
 
@@ -975,6 +976,7 @@ function renderAccountsView() {
                     </span>
                     <div class="flex items-center gap-2">
                       <span class="text-xs text-slate-500 font-mono">${a.institution}</span>
+                      <button class="btn-edit-account text-slate-400 hover:text-brand-300 text-xs px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 transition" data-id="${a.id}">✏️ Edit</button>
                       <button class="btn-delete-account text-slate-500 hover:text-rose-400 text-xs px-1.5 py-0.5 rounded transition" data-id="${a.id}">✕</button>
                     </div>
                   </div>
@@ -997,11 +999,23 @@ function renderAccountsView() {
 }
 
 function renderAccountModal() {
+  const isEdit = Boolean(editingAccount);
+  const title = isEdit ? 'Edit Financial Account' : 'Add Financial Account';
+  const buttonText = isEdit ? 'Update Account' : 'Save Account';
+
+  const nameVal = editingAccount ? editingAccount.name : '';
+  const typeVal = editingAccount ? editingAccount.account_type : 'BANK';
+  const instVal = editingAccount ? editingAccount.institution : '';
+  const currVal = editingAccount ? editingAccount.currency : 'ILS';
+  const balVal = editingAccount ? editingAccount.opening_balance : 0.00;
+  const primaryVal = editingAccount && editingAccount.billing_day_primary ? editingAccount.billing_day_primary : 10;
+  const secondaryVal = editingAccount && editingAccount.billing_day_secondary ? editingAccount.billing_day_secondary : '';
+
   return `
     <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div class="glass-panel max-w-md w-full p-6 space-y-4">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-          <h3 class="text-lg font-bold text-white">Add Financial Account</h3>
+          <h3 class="text-lg font-bold text-white">${title}</h3>
           <button id="btn-close-modal" class="text-slate-400 hover:text-white text-sm">✕</button>
         </div>
 
@@ -1010,20 +1024,20 @@ function renderAccountModal() {
 
           <div>
             <label class="block text-xs font-medium text-slate-300 mb-1">Account Name</label>
-            <input type="text" id="acc-name" required placeholder="e.g. Bank Hapoalim Checking" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+            <input type="text" id="acc-name" required value="${nameVal}" placeholder="e.g. Bank Hapoalim Checking" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
           </div>
 
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label class="block text-xs font-medium text-slate-300 mb-1">Account Type</label>
               <select id="acc-type" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
-                <option value="BANK">BANK</option>
-                <option value="CREDIT_CARD">CREDIT_CARD</option>
+                <option value="BANK" ${typeVal === 'BANK' ? 'selected' : ''}>BANK</option>
+                <option value="CREDIT_CARD" ${typeVal === 'CREDIT_CARD' ? 'selected' : ''}>CREDIT_CARD</option>
               </select>
             </div>
             <div>
               <label class="block text-xs font-medium text-slate-300 mb-1">Institution</label>
-              <input type="text" id="acc-institution" required placeholder="e.g. Hapoalim" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+              <input type="text" id="acc-institution" required value="${instVal}" placeholder="e.g. Hapoalim" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
             </div>
           </div>
 
@@ -1031,31 +1045,31 @@ function renderAccountModal() {
             <div>
               <label class="block text-xs font-medium text-slate-300 mb-1">Currency</label>
               <select id="acc-currency" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
-                <option value="ILS">ILS (₪)</option>
-                <option value="USD">USD ($)</option>
-                <option value="EUR">EUR (€)</option>
+                <option value="ILS" ${currVal === 'ILS' ? 'selected' : ''}>ILS (₪)</option>
+                <option value="USD" ${currVal === 'USD' ? 'selected' : ''}>USD ($)</option>
+                <option value="EUR" ${currVal === 'EUR' ? 'selected' : ''}>EUR (€)</option>
               </select>
             </div>
             <div>
               <label class="block text-xs font-medium text-slate-300 mb-1">Opening Balance</label>
-              <input type="number" step="0.01" id="acc-balance" value="0.00" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+              <input type="number" step="0.01" id="acc-balance" value="${balVal}" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
             </div>
           </div>
 
-          <div id="acc-cc-billing-block" class="grid grid-cols-2 gap-3 p-3 rounded-lg bg-brand-500/10 border border-brand-500/20">
+          <div id="acc-cc-billing-block" class="grid grid-cols-2 gap-3 p-3 rounded-lg bg-brand-500/10 border border-brand-500/20 ${typeVal === 'CREDIT_CARD' ? '' : 'hidden'}">
             <div>
               <label class="block text-xs font-semibold text-brand-300 mb-1">Primary Billing Day (1-31)</label>
-              <input type="number" min="1" max="31" id="acc-billing-primary" value="10" placeholder="e.g. 10" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+              <input type="number" min="1" max="31" id="acc-billing-primary" value="${primaryVal}" placeholder="e.g. 10" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
             </div>
             <div>
               <label class="block text-xs font-semibold text-slate-300 mb-1">Secondary Day (Optional)</label>
-              <input type="number" min="1" max="31" id="acc-billing-secondary" placeholder="e.g. 2" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
+              <input type="number" min="1" max="31" id="acc-billing-secondary" value="${secondaryVal}" placeholder="e.g. 2" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500" />
             </div>
           </div>
 
           <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
             <button type="button" id="btn-cancel-modal" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-900">Cancel</button>
-            <button type="submit" id="btn-save-account" class="bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow">Save Account</button>
+            <button type="submit" id="btn-save-account" class="bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow">${buttonText}</button>
           </div>
         </form>
       </div>
@@ -1752,6 +1766,7 @@ let wizardMapping = {
   billing_date_col: '',
   original_amount_col: '',
   original_currency_col: '',
+  cutoff_date: '',
 };
 let wizardStagingResult: {
   passed_transactions: Transaction[];
@@ -1954,10 +1969,10 @@ function renderImportView() {
               </div>
             </div>
 
-            <!-- Optional Credit Card Specific Mappings -->
+            <!-- Optional Credit Card & Import Cutoff Mappings -->
             <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 space-y-3">
-              <h5 class="text-[11px] font-bold text-brand-300 uppercase tracking-wider">Credit Card Statement Fields (Optional)</h5>
-              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <h5 class="text-[11px] font-bold text-brand-300 uppercase tracking-wider">Statement Filters &amp; Credit Card Fields (Optional)</h5>
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div>
                   <label class="block text-[11px] font-medium text-slate-400 mb-1">Billing Date Column</label>
                   <select id="w1-billing-date-col" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white">
@@ -1984,6 +1999,10 @@ function renderImportView() {
                       <option value="${c}" ${wizardMapping.original_currency_col === c ? 'selected' : ''}>${c}</option>
                     `).join('')}
                   </select>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-medium text-slate-400 mb-1">Cutoff Month / Date</label>
+                  <input type="text" id="w1-cutoff-date" placeholder="e.g. 2024-06 or YYYY-MM-DD" value="${wizardMapping.cutoff_date || ''}" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500" />
                 </div>
               </div>
             </div>
@@ -2546,13 +2565,37 @@ function attachEvents() {
   });
 
   // ---- Account Modal ----
-  const openModal = () => { showAddAccountModal = true; renderApp(); };
-  const closeModal = () => { showAddAccountModal = false; renderApp(); };
+  const openModal = () => { editingAccount = null; showAddAccountModal = true; renderApp(); };
+  const closeModal = () => { editingAccount = null; showAddAccountModal = false; renderApp(); };
 
   document.getElementById('btn-add-account')?.addEventListener('click', openModal);
   document.getElementById('btn-add-account-empty')?.addEventListener('click', openModal);
   document.getElementById('btn-close-modal')?.addEventListener('click', closeModal);
   document.getElementById('btn-cancel-modal')?.addEventListener('click', closeModal);
+
+  document.getElementById('acc-type')?.addEventListener('change', (e) => {
+    const val = (e.target as HTMLSelectElement).value;
+    const block = document.getElementById('acc-cc-billing-block');
+    if (block) {
+      if (val === 'CREDIT_CARD') {
+        block.classList.remove('hidden');
+      } else {
+        block.classList.add('hidden');
+      }
+    }
+  });
+
+  document.querySelectorAll('.btn-edit-account').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+      const acc = accountsList.find(a => a.id === id);
+      if (acc) {
+        editingAccount = acc;
+        showAddAccountModal = true;
+        renderApp();
+      }
+    });
+  });
 
   const formAccount = document.getElementById('form-account') as HTMLFormElement;
   if (formAccount) {
@@ -2574,8 +2617,12 @@ function attachEvents() {
         const billing_day_secondary = account_type === 'CREDIT_CARD' && (document.getElementById('acc-billing-secondary') as HTMLInputElement)?.value
           ? parseInt((document.getElementById('acc-billing-secondary') as HTMLInputElement).value) || null : null;
 
-        const res = await fetch('/api/v1/accounts', {
-          method: 'POST',
+        const isEdit = Boolean(editingAccount);
+        const url = isEdit ? `/api/v1/accounts/${editingAccount!.id}` : '/api/v1/accounts';
+        const method = isEdit ? 'PUT' : 'POST';
+
+        const res = await fetch(url, {
+          method,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name,
@@ -2590,12 +2637,13 @@ function attachEvents() {
 
         if (res.ok) {
           showAddAccountModal = false;
+          editingAccount = null;
           await loadData();
           renderApp();
-          showToast('Account created successfully', 'success');
+          showToast(isEdit ? 'Account updated successfully' : 'Account created successfully', 'success');
         } else {
           const errJson = await res.json().catch(() => ({}));
-          const errMsg = errJson.error || res.statusText || 'Failed to create account';
+          const errMsg = errJson.error || res.statusText || 'Failed to save account';
           if (errorDiv) { errorDiv.textContent = errMsg; errorDiv.classList.remove('hidden'); }
         }
       } catch (err: any) {
@@ -2605,7 +2653,7 @@ function attachEvents() {
           errorDiv.classList.remove('hidden');
         }
       } finally {
-        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save Account'; }
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = editingAccount ? 'Update Account' : 'Save Account'; }
       }
     });
   }
@@ -2812,6 +2860,7 @@ function attachEvents() {
     wizardMapping.billing_date_col = (document.getElementById('w1-billing-date-col') as HTMLSelectElement)?.value || '';
     wizardMapping.original_amount_col = (document.getElementById('w1-orig-amount-col') as HTMLSelectElement)?.value || '';
     wizardMapping.original_currency_col = (document.getElementById('w1-orig-currency-col') as HTMLSelectElement)?.value || '';
+    wizardMapping.cutoff_date = (document.getElementById('w1-cutoff-date') as HTMLInputElement)?.value.trim() || '';
 
     const nextBtn = document.getElementById('btn-w1-next') as HTMLButtonElement;
     if (nextBtn) { nextBtn.disabled = true; nextBtn.innerText = '⏳ Parsing Preview...'; }
@@ -2834,6 +2883,7 @@ function attachEvents() {
       if (wizardMapping.billing_date_col) fd.append('billing_date_column', wizardMapping.billing_date_col);
       if (wizardMapping.original_amount_col) fd.append('original_amount_column', wizardMapping.original_amount_col);
       if (wizardMapping.original_currency_col) fd.append('original_currency_column', wizardMapping.original_currency_col);
+      if (wizardMapping.cutoff_date) fd.append('cutoff_date', wizardMapping.cutoff_date);
 
       const res = await fetch('/api/v1/import/stage', { method: 'POST', body: fd });
       if (res.ok) {

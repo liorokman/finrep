@@ -13,12 +13,14 @@ import (
 
 func main() {
 	var (
-		providerFlag  = flag.String("provider", "", "Target provider: isracard, cal, or leumi")
-		dirFlag       = flag.String("dir", "", "Directory containing PDF statement files to process")
-		outFlag       = flag.String("out", "", "Output CSV file path (defaults to stdout)")
-		configFlag    = flag.String("config", "ccpdf.json", "Path to configuration JSON file")
-		genConfigFlag = flag.Bool("generate-config", false, "Generate example ccpdf.json configuration file and exit")
-		verboseFlag   = flag.Bool("verbose", false, "Enable verbose logging")
+		providerFlag   = flag.String("provider", "", "Target provider: isracard, cal, or leumi")
+		dirFlag        = flag.String("dir", "", "Directory containing PDF statement files to process")
+		outFlag        = flag.String("out", "", "Output CSV file path (defaults to stdout)")
+		configFlag     = flag.String("config", "ccpdf.json", "Path to configuration JSON file")
+		cutoffDateFlag = flag.String("cutoff-date", "", "Cutoff billing date or month (e.g. YYYY-MM or YYYY-MM-DD); transactions earlier than this will be ignored")
+		cutoffFlag     = flag.String("cutoff", "", "Alias for -cutoff-date")
+		genConfigFlag  = flag.Bool("generate-config", false, "Generate example ccpdf.json configuration file and exit")
+		verboseFlag    = flag.Bool("verbose", false, "Enable verbose logging")
 	)
 
 	flag.Usage = func() {
@@ -95,6 +97,19 @@ func main() {
 
 		allTransactions = append(allTransactions, txs...)
 		processedFilesCount++
+	}
+
+	effectiveCutoff := strings.TrimSpace(*cutoffDateFlag)
+	if effectiveCutoff == "" {
+		effectiveCutoff = strings.TrimSpace(*cutoffFlag)
+	}
+
+	if effectiveCutoff != "" && len(allTransactions) > 0 {
+		initialCount := len(allTransactions)
+		allTransactions = ccpdf.FilterByCutoffDate(allTransactions, effectiveCutoff)
+		filteredCount := initialCount - len(allTransactions)
+		fmt.Fprintf(os.Stderr, "Filtered out %d transaction(s) earlier than cutoff '%s' (retained %d)\n",
+			filteredCount, effectiveCutoff, len(allTransactions))
 	}
 
 	if len(allTransactions) == 0 {
