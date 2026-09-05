@@ -1,6 +1,7 @@
 package services
 
 import (
+	"database/sql"
 	"fmt"
 	"math"
 	"strings"
@@ -199,6 +200,41 @@ func (s *BillingService) UnlinkCycle(cycleID string) error {
 	return s.db.UnlinkBankPaymentFromCycle(cycleID)
 }
 
+// ccCycleRange derives the month range for auto-generated billing cycles from the
+// account's own data: from the earliest of (account creation month, first transaction
+// month) through the latest of (current month, last transaction month).
+func (s *BillingService) ccCycleRange(acc models.Account) (fromMonth, toMonth string, err error) {
+	fromMonth = acc.CreatedAt.Format("2006-01")
+	toMonth = time.Now().Format("2006-01")
+
+	var minDate, maxDate sql.NullString
+	if err := s.db.QueryRow(`
+		SELECT MIN(COALESCE(t.billing_date, t.date)), MAX(COALESCE(t.billing_date, t.date))
+		FROM transactions t
+		WHERE t.account_id = ?
+	`, acc.ID).Scan(&minDate, &maxDate); err != nil {
+		return "", "", err
+	}
+
+	if minDate.Valid && len(minDate.String) >= 7 && minDate.String[:7] < fromMonth {
+		fromMonth = minDate.String[:7]
+	}
+	if maxDate.Valid && len(maxDate.String) >= 7 {
+		maxMonth := maxDate.String[:7]
+		// Pad one month past the last transaction: the cycle containing it can end
+		// in the following month (charges after the billing day roll forward).
+		if len(maxDate.String) >= 10 {
+			if endT, perr := time.Parse("2006-01-02", maxDate.String[:10]); perr == nil {
+				maxMonth = endT.AddDate(0, 1, 0).Format("2006-01")
+			}
+		}
+		if maxMonth > toMonth {
+			toMonth = maxMonth
+		}
+	}
+	return fromMonth, toMonth, nil
+}
+
 // AutoMatchCCPayments automatically matches Leumi bank debit transactions with CC billing cycles & external cards.
 func (s *BillingService) AutoMatchCCPayments() (int, error) {
 	accounts, err := s.db.GetAccounts()
@@ -206,10 +242,13 @@ func (s *BillingService) AutoMatchCCPayments() (int, error) {
 		return 0, fmt.Errorf("failed to fetch accounts: %w", err)
 	}
 
-	// 1. Generate & populate billing cycles for all credit card accounts across date range
+	// 1. Generate & populate billing cycles for all credit card accounts across the
+	// data-driven date range (account creation / first transaction .. last transaction / now)
 	for _, acc := range accounts {
 		if acc.AccountType == models.AccountTypeCreditCard {
-			s.GenerateCycles(acc.ID, "2023-01", "2026-12")
+			if fromMonth, toMonth, rangeErr := s.ccCycleRange(acc); rangeErr == nil {
+				s.GenerateCycles(acc.ID, fromMonth, toMonth)
+			}
 			cList, _ := s.db.GetBillingCycles(acc.ID, "")
 			for _, c := range cList {
 				s.AutoPopulateCycle(c.ID)
@@ -269,7 +308,8 @@ func (s *BillingService) AutoMatchCCPayments() (int, error) {
 		}
 
 		var bestCycle *models.BillingCycle
-		var bestDiff float64 = 999999
+		var bestDayDiff = math.MaxInt
+		var bestAmtDiff float64
 
 		for i, c := range cycles {
 			if c.BankTransactionID != nil && *c.BankTransactionID != "" || c.ExpectedAmount == nil {
@@ -285,18 +325,25 @@ func (s *BillingService) AutoMatchCCPayments() (int, error) {
 			}
 
 			dayDiff := int(btDate.Sub(billDate).Hours() / 24)
-			if dayDiff < -14 || dayDiff > 14 {
+			absDayDiff := dayDiff
+			if absDayDiff < 0 {
+				absDayDiff = -absDayDiff
+			}
+			if absDayDiff > 14 {
 				continue
 			}
 
 			amtDiff := math.Abs(btAmt - *c.ExpectedAmount)
-			if amtDiff < 0.05 {
+			if amtDiff >= 2.0 {
+				continue
+			}
+
+			// Score candidates by bill-date distance first, then amount difference,
+			// so a payment lands on the cycle whose expected bill date is nearest.
+			if bestCycle == nil || absDayDiff < bestDayDiff || (absDayDiff == bestDayDiff && amtDiff < bestAmtDiff) {
 				bestCycle = &cycles[i]
-				bestDiff = amtDiff
-				break
-			} else if amtDiff < 2.0 && amtDiff < bestDiff {
-				bestCycle = &cycles[i]
-				bestDiff = amtDiff
+				bestDayDiff = absDayDiff
+				bestAmtDiff = amtDiff
 			}
 		}
 
