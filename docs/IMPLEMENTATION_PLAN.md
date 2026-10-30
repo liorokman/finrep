@@ -55,12 +55,12 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - Eight read-only tools over the same services; stdio and Streamable HTTP under `/mcp`; static bearer-token auth.
 - Acceptance: integration tests list tools and call them over **both** transports.
 
-## Phase 10 — Web UI  *(built, awaiting design sign-off: `internal/webui`; no-build ES modules embedded in the binary)*
+## Phase 10 — Web UI  *(done, design signed off by the user: `internal/webui`; no-build ES modules embedded in the binary)*
 - Design pass first (type scale, spacing, colour tokens, light/dark, RTL rules) as a small static prototype for sign-off.
 - Then build the views listed in spec §13 (including Cards & statements by owner and the upcoming-bills timeline) with an escaping-by-construction component layer, accessible charts, click-through filtering.
 - Acceptance: browser smoke tests for import → categorize → settle → report; axe accessibility check; Hebrew/English bidi snapshot checks.
 
-## Phase 11 — Packaging
+## Phase 11 — Packaging  *(done: Dockerfile, compose example, README)*
 - Embedded UI build, Dockerfile (non-root, healthcheck), compose example, Taskfile, README (setup, auth, backup/restore, importing, MCP client config).
 
 ## Decisions captured

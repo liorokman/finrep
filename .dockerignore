@@ -13,7 +13,6 @@ ccpdf*.json
 *.local.*
 .env
 finrep
-ccpdf2csv
-web/node_modules
 docs
 TODO.md
+secrets

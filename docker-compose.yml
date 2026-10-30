@@ -1,25 +1,38 @@
-version: '3.8'
-
+# Example deployment behind a reverse proxy that terminates HTTPS.
+# Put the secrets in ./secrets/ (one value per file, not committed) and adjust the OIDC settings.
 services:
   finrep:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
+    image: finrep:latest
     container_name: finrep
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      - PORT=8080
-      - LOG_LEVEL=info
-      - MODE=web
-      - DB_PATH=/app/data/finrep.db
-      - OIDC_ENABLED=true
-      - OIDC_ISSUER=https://auth.example.com/application/o/finrep/
-      - OIDC_CLIENT_ID=finrep-app
+      FINREP_AUTH: "on"
+      FINREP_OIDC_ISSUER: https://auth.example.com/application/o/finrep/
+      FINREP_OIDC_CLIENT_ID: finrep
+      FINREP_OIDC_REDIRECT: https://finrep.example.com/auth/callback
+      FINREP_OIDC_REQUIRED_GROUP: FinRep_Users
+      FINREP_SESSION_SECRET_FILE: /run/secrets/session_secret   # at least 32 random bytes
+      FINREP_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret   # omit for a public (PKCE-only) client
+      FINREP_MCP_TOKEN_FILE: /run/secrets/mcp_token             # omit to disable the /mcp endpoint
+      FINREP_TRUSTED_PROXIES: 172.16.0.0/12                     # the reverse proxy's network
+      FINREP_LOG_LEVEL: info
+    secrets:
+      - session_secret
+      - oidc_client_secret
+      - mcp_token
     volumes:
-      - finrep-data:/app/data
+      - finrep-data:/data
+
+secrets:
+  session_secret:
+    file: ./secrets/session_secret
+  oidc_client_secret:
+    file: ./secrets/oidc_client_secret
+  mcp_token:
+    file: ./secrets/mcp_token
 
 volumes:
   finrep-data:
-    name: finrep-data

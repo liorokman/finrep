@@ -1,28 +1,21 @@
-# Stage 1: Build Vite Frontend Assets
-FROM node:20-alpine AS ui-builder
-WORKDIR /app/web
-COPY web/package*.json ./
-RUN npm ci
-COPY web/ ./
-RUN npm run build
-
-# Stage 2: Build Go 1.26 CGO-free Executable
-FROM golang:1.26-alpine AS go-builder
-WORKDIR /app
+# Build: the UI is plain files embedded in the binary, so there is no Node stage.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-COPY --from=ui-builder /app/cmd/server/public ./cmd/server/public
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o finrep ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/finrep ./cmd/finrep
 
-# Stage 3: Minimal Production Runtime
+# Run: minimal image, non-root, data in a volume.
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
-WORKDIR /app
-COPY --from=go-builder /app/finrep /app/finrep
-
+RUN apk add --no-cache ca-certificates tzdata \
+ && addgroup -S -g 10001 finrep && adduser -S -u 10001 -G finrep -h /data finrep \
+ && mkdir -p /data && chown finrep:finrep /data
+COPY --from=build /out/finrep /usr/local/bin/finrep
+USER finrep
+WORKDIR /data
+ENV FINREP_DB_PATH=/data/finrep.db FINREP_PORT=8080
 EXPOSE 8080
-VOLUME ["/app/data"]
-
-ENTRYPOINT ["/app/finrep"]
-CMD ["--port=8080", "--db-path=/app/data/finrep.db"]
+VOLUME ["/data"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1
+ENTRYPOINT ["finrep"]
