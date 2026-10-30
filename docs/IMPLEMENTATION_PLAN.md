@@ -6,7 +6,7 @@ Each phase ends green: `go build ./... && go vet ./... && go test ./...`, with t
 
 ## Phase 0 — Hygiene (before any feature work)
 - `.gitignore` / `.dockerignore`: `data/`, `*.csv`, `*.pdf`, `*.db*`, `ccpdf*.json`, `*.local.*`, built binaries, `web/node_modules`.
-- Move secrets out of the tree; rotate the LocalAI key found in `ccpdf*.json`.
+- Move secrets out of the tree; rotate the LocalAI key found in `ccpdf*.json` (the legacy `internal/ccpdf` LocalAI client is deleted with the old code, not ported).
 - Remove the stray `leumi-2026-09.csv` from the root (move under ignored `data/`).
 
 ## Phase 1 — Foundation  *(done: `internal/money`, `internal/store`, `internal/conf`, `cmd/finrep`)*
@@ -25,7 +25,7 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - Encoding detection (BOM, `utf8.Valid`, Windows-1255), format-aware date parser, column mapper (no saved presets in v1).
 - Tag each card charge `LOCAL`/`FOREIGN`; keep the issuer's bill date from the file.
 - Dedup key by in-file ordinal; batches + undo; stage/commit API.
-- Port ccpdf Isracard/Cal/Leumi parsers behind the same importer interface; optional LLM spacing fix.
+- Isracard/Cal/Leumi PDF parsers rewritten on positioned cells behind the same importer interface. No LLM text-repair step: it only compensated for the old line-based extraction and was slow.
 - Acceptance: import-twice-inserts-zero property test; BOM/emoji/Windows-1255/`MM/DD/YYYY` fixtures; PDF fixture tests from `data/*.pdf`.
 
 ## Phase 4 — Categorization
