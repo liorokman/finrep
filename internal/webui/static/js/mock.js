@@ -219,7 +219,7 @@ function report(name, p) {
   if (name === 'net-worth') {
     const to = p.to || TODAY; const from = p.from || '2025-10-01'; const pts = [];
     for (const m of monthsBetween(from.slice(0, 7), to.slice(0, 7))) { const e = new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)).toISOString().slice(0, 10); pts.push(e > to ? to : e); }
-    return { items: pts.map((d) => { let a = 0, l = 0; for (const acc of ACC) { if (p.owner && acc.owner !== p.owner) continue; const b = balance(acc, d); if (acc.type === 'BANK') a += b; else l += -b; } return { date: d, assets: M(a), liabilities: M(l), net_worth: M(a - l) }; }) };
+    return { items: pts.map((d) => { let a = 0, l = 0; for (const acc of ACC) { if (p.owner && acc.owner !== p.owner) continue; const ids = [].concat(p.account_id || []); if (ids.length && !ids.includes(acc.id)) continue; const b = balance(acc, d); if (acc.type === 'BANK') a += b; else l += -b; } return { date: d, assets: M(a), liabilities: M(l), net_worth: M(a - l) }; }) };
   }
   if (name === 'recurring') {
     const subs = TX.filter((t) => t.is_standing_order && t.amount.minor < 0); const by = {};

@@ -11,6 +11,10 @@ try {
     const cards = await b.eval(`document.querySelectorAll('.card').length`);
     check(!err && cards > 0, `${view} renders (${cards} cards)${err ? ': ' + err : ''}`);
   }
+  // A bank account has its own page: balance chart and movements with a running balance.
+  await b.open(`${base}/?mock=1#/cards`, 1500);
+  await b.click('button.cardtile', 0); await b.sleep(900);
+  check(await b.eval(`!!document.querySelector('.chart svg') && document.querySelectorAll('tbody tr').length > 5`), 'bank account page shows a balance chart and movements');
   // Hebrew truncation: the clipping element must itself be RTL so the ellipsis lands on the logical end.
   await b.open(`${base}/?mock=1#/transactions`, 1800);
   const bad = await b.eval(`[...document.querySelectorAll('.ut-block[lang=he]')].filter((e) => /^[^A-Za-z\u0590-\u05FF]*[\u0590-\u05FF]/.test(e.textContent) && getComputedStyle(e).direction !== 'rtl').length`);

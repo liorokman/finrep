@@ -1,18 +1,18 @@
 import { h, mount, ut, utBlock } from '../dom.js';
 import { icon } from '../icons.js';
 import { api } from '../api.js';
-import { state, periodRange, cards as cardAccounts } from '../state.js';
-import { money, compact, amount, date, weekday, relDay, plural } from '../format.js';
-import { timeline, SERIES } from '../charts.js';
-import { segmented, selectField, statusBadge, drawer, toast, emptyState, tipRows } from '../ui.js';
+import { state, periodRange, cards as cardAccounts, setFilters } from '../state.js';
+import { money, compact, amount, date, weekday, relDay, plural, monthShort, addMonths } from '../format.js';
+import { timeline, lines, legend, SERIES } from '../charts.js';
+import { segmented, selectField, statusBadge, drawer, toast, emptyState, tipRows, categoryChip, chartTable, simpleTable } from '../ui.js';
 import { refreshBadges } from '../main.js';
 
-const F = { status: 'ALL', card: '' };
+const F = { status: 'ALL', card: '', bank: '' };
 const owing = (s) => Math.max(0, s.expected.minor - s.settled.minor);
 
 export default {
-  id: 'cards', title: 'Cards & bills', filters: ['owner'],
-  sub: () => 'What each card owes, when the bank is charged, and which debit paid what',
+  id: 'cards', title: 'Accounts', filters: ['owner'],
+  sub: () => 'Bank balances, what each card owes, and which debit paid which bill',
 
   async render() {
     const owner = state.filters.owner || undefined;
@@ -23,6 +23,23 @@ export default {
     ]);
     const all = stm.items;
     const cards = cardAccounts().filter((c) => !owner || c.owner === owner);
+    const banks = state.accounts.filter((a) => a.type === 'BANK' && (!owner || a.owner === owner));
+    const monthStart = state.today.slice(0, 8) + '01';
+    const bankData = await Promise.all(banks.map(async (b) => {
+      const [nw, cf] = await Promise.all([
+        api.get('/api/v1/reports/net-worth', { account_id: b.id, from: addMonths(monthStart, -11), to: state.today }),
+        api.get('/api/v1/reports/cash-flow', { account_id: b.id, from: monthStart, to: state.today, measure: 'OUT_OF_POCKET' })]);
+      const pts = nw.items, last = pts[pts.length - 1], prev = pts.length > 1 ? pts[pts.length - 2] : null, m = cf.items[cf.items.length - 1];
+      return { acc: b, pts, balance: last ? last.assets : { minor: 0, currency: 'ILS' }, change: last && prev ? last.assets.minor - prev.assets.minor : null, inMonth: m ? m.income : null, outMonth: m ? m.spending : null };
+    }));
+
+    // ----- bank tiles -----
+    const bankTiles = bankData.map((d) => h('button', { class: ['card tile cardtile', F.bank === d.acc.id && 'on'], type: 'button', 'aria-pressed': String(F.bank === d.acc.id), onclick: () => { F.bank = F.bank === d.acc.id ? '' : d.acc.id; F.card = ''; rerender(); } },
+      h('div', { class: 'row', style: { gap: '8px' } }, icon('wallet', 'sm'), h('span', { class: 'strong grow', style: { textAlign: 'start' } }, ut(d.acc.name)), d.acc.owner && h('span', { class: 'muted xs' }, d.acc.owner)),
+      h('div', { class: 'label', style: { marginTop: '14px' } }, 'Balance'), h('div', { class: 'value amount' }, money(d.balance, { whole: true })),
+      h('div', { class: 'foot', style: { flexDirection: 'column', alignItems: 'flex-start', gap: '2px' } },
+        d.change != null && h('span', { class: ['delta', d.change >= 0 ? 'up-good' : 'up-bad'] }, icon(d.change >= 0 ? 'arrowup' : 'arrowdown', 'sm'), compact({ minor: Math.abs(d.change), currency: 'ILS' }) + ' since last month end'),
+        d.inMonth && h('span', { class: 'muted small' }, 'This month: ', h('span', { class: 'amount' }, '+' + compact(d.inMonth) + ' in · ' + compact(d.outMonth) + ' out')))));
 
     // ----- card tiles -----
     const tiles = cards.map((c) => {
@@ -31,7 +48,7 @@ export default {
       const owed = unpaid.reduce((a, s) => a + owing(s), 0);
       const next = unpaid.filter((s) => s.bill_date >= state.today).sort((a, b) => (a.bill_date < b.bill_date ? -1 : 1))[0];
       const overdue = unpaid.filter((s) => s.bill_date < state.today).reduce((a, s) => a + owing(s), 0);
-      return h('button', { class: ['card tile cardtile', F.card === c.id && 'on'], type: 'button', 'aria-pressed': String(F.card === c.id), onclick: () => { F.card = F.card === c.id ? '' : c.id; rerender(); } },
+      return h('button', { class: ['card tile cardtile', F.card === c.id && 'on'], type: 'button', 'aria-pressed': String(F.card === c.id), onclick: () => { F.card = F.card === c.id ? '' : c.id; F.bank = ''; rerender(); } },
         h('div', { class: 'row', style: { gap: '8px' } }, icon('card', 'sm'), h('span', { class: 'strong grow', style: { textAlign: 'start' } }, ut(c.name)), c.owner && h('span', { class: 'muted xs' }, c.owner)),
         h('div', { class: 'label', style: { marginTop: '14px' } }, 'Owed right now'), h('div', { class: 'value amount' }, money({ minor: owed, currency: 'ILS' }, { whole: true })),
         h('div', { class: 'foot', style: { flexDirection: 'column', alignItems: 'flex-start', gap: '2px' } },
@@ -39,8 +56,28 @@ export default {
           next ? h('span', { class: 'muted small' }, 'Next bill ' + weekday(next.bill_date) + ' ' + date(next.bill_date, { year: false }) + ' · ' + money(next.expected, { whole: true })) : h('span', { class: 'muted small' }, 'No bill coming up')));
     });
 
+    // ----- one bank account in detail -----
+    const sel = bankData.find((d) => d.acc.id === F.bank);
+    let bankPanel = null;
+    if (sel) {
+      const mv = await api.get('/api/v1/transactions', { account_id: sel.acc.id, from: periodRange('12m').from, limit: 60 });
+      const settledBy = new Map(); for (const st of all) for (const x of st.settlements) settledBy.set(x.bank_tx_id, st);
+      const unlinked = new Set(warn.unlinked_card_payments.map((u) => u.transaction_id));
+      let bal = sel.balance.minor;   // newest first: the balance after each line, walking backwards
+      const rows = mv.items.map((t) => { const after = bal; bal -= t.amount.minor; return { t, after }; });
+      const note = (t) => { const st = settledBy.get(t.id); if (st) return h('span', { class: 'badge paid' }, icon('link'), 'Paid ' + st.account_name + ' bill of ' + date(st.bill_date, { year: false })); if (unlinked.has(t.id)) return h('span', { class: 'badge billed' }, icon('alert'), 'Card payment, not matched'); return t.category_id ? categoryChip(t) : h('span', { class: 'muted small' }, 'Uncategorized'); };
+      const series = [{ name: 'Balance', color: SERIES[0], values: sel.pts.map((p) => p.assets.minor) }];
+      const trend = chartTable(() => sel.pts.length > 1 ? lines({ dates: sel.pts.map((p) => p.date), series, height: 220, endLabels: false }) : emptyState('chart', 'Not enough history yet'),
+        () => simpleTable([{ label: 'Month end' }, { label: 'Balance', num: true }], sel.pts.map((p) => [date(p.date), h('span', { class: 'amount' }, money(p.assets))])));
+      bankPanel = h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
+        h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, ut(sel.acc.name)), h('div', { class: 'sub' }, 'Balance at each month end, over the last year')), trend.toggle), trend.body),
+        h('div', { class: 'card flush' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'Movements'), h('div', { class: 'sub' }, 'Latest ' + rows.length + ' of ' + mv.total + ' lines in this account, with the balance after each')), h('a', { class: 'btn ghost sm', href: '#/transactions' }, 'Open in Transactions', icon('right', 'sm'))),
+          rows.length ? h('div', { class: 'table-wrap' }, h('table', { class: 't dense' }, h('thead', null, h('tr', null, ['Date', 'Payee', 'What it was', 'Amount', 'Balance after'].map((c, i) => h('th', { class: i > 2 ? 'num' : '' }, c)))),
+            h('tbody', null, rows.map(({ t, after }) => h('tr', null, h('td', null, date(t.date, { year: false })), h('td', null, utBlock(t.payee_cleaned || t.payee_raw)), h('td', null, note(t)), h('td', { class: 'num' }, amount(t.amount, { income: true })), h('td', { class: 'num' }, h('span', { class: 'amount muted' }, money({ minor: after, currency: 'ILS' })))))))) : emptyState('list', 'No movements yet', 'Import a bank export for this account.', h('a', { class: 'btn sm', href: '#/import' }, 'Import a file'))));
+    }
+
     // ----- matching -----
-    const matchCard = (props.items.length || warn.unlinked_card_payments.length) && h('div', { class: 'card span-5' },
+    const matchCard = (props.items.length || warn.unlinked_card_payments.length) && h('div', { class: ['card', F.bank ? '' : 'span-5'] },
       h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'Match bank debits to bills'), h('div', { class: 'sub' }, 'Linking a debit to its bill keeps card payments out of your spending totals')),
         props.items.length > 1 && h('button', { class: 'btn primary sm', type: 'button', onclick: confirmAll }, icon('check', 'sm'), 'Confirm all ' + props.items.length)),
       h('ul', { class: 'list' }, props.items.map((p) => h('li', null,
@@ -89,8 +126,10 @@ export default {
 
     let host;
     function rerender() { document.dispatchEvent(new CustomEvent('finrep:rerender')); }
+    const allTiles = [...bankTiles, ...tiles];
     return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
-      tiles.length ? h('div', { class: 'cardtiles' }, tiles) : null, h('div', { class: 'grid' }, outflow, matchCard || null), stmtCard);
+      allTiles.length ? h('div', { class: 'cardtiles' }, allTiles) : emptyState('card', 'No accounts yet', 'Add your bank account and cards in Settings.', h('a', { class: 'btn sm', href: '#/settings' }, 'Open Settings')),
+      bankPanel ? [matchCard ? h('div', { class: 'grid' }, h('div', { class: 'span-12' }, matchCard)) : null, bankPanel] : [h('div', { class: 'grid' }, outflow, matchCard || null), stmtCard]);
   },
 };
 

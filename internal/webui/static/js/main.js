@@ -18,7 +18,7 @@ const VIEWS = {
   settings: () => import('./views/settings.js'),
 };
 const NAV = [
-  ['overview', 'Overview', 'home'], ['transactions', 'Transactions', 'list'], ['cards', 'Cards & bills', 'card'],
+  ['overview', 'Overview', 'home'], ['transactions', 'Transactions', 'list'], ['cards', 'Accounts', 'card'],
   ['import', 'Import', 'upload'], ['reports', 'Reports', 'chart'], ['categories', 'Categories', 'tag'], ['settings', 'Settings', 'sliders'],
 ];
 
