@@ -2,7 +2,7 @@ import { h, ut, utBlock } from '../dom.js';
 import { icon } from '../icons.js';
 import { api } from '../api.js';
 import { state, scope, catName, periodRange } from '../state.js';
-import { money, compact, amount, pct, date, monthShort, monthLong } from '../format.js';
+import { money, compact, amount, pct, date, monthShort, monthLong, plural } from '../format.js';
 import { columns, lines, hbars, heatmap, legend, SERIES } from '../charts.js';
 import { chartTable, simpleTable, emptyState, statusBadge, segmented } from '../ui.js';
 import { go } from '../main.js';
@@ -55,6 +55,27 @@ const TABS = [
       h('div', { class: 'meter', role: 'img', 'aria-label': Math.round(used * 100) + '% of budget used' }, h('i', { style: { '--w': Math.min(100, used * 100), background: over ? 'var(--crit)' : null } })),
       h('div', { class: ['small', over ? 'delta up-bad' : 'muted'] }, over && icon('alert', 'sm'), over ? 'Over by ' + money({ minor: -r.remaining.minor, currency: cur }, { whole: true }) : money(r.remaining, { whole: true }) + ' left')); })) });
   }],
+  ['installments', 'Installments', async () => {
+    const f = await api.get('/api/v1/reports/installments', scope({ measure: 'OUT_OF_POCKET' }));
+    const total = f.months.reduce((a, m) => a + m.total.minor, 0);
+    const view = chartTable(() => f.months.length ? h('div', { class: 'stack' }, columns({ labels: f.months.map((m) => monthShort(m.month) + " '" + m.month.slice(2, 4)), groupLabels: f.months.map((m) => monthLong(m.month)), series: [{ name: 'Installments due', color: SERIES[0], values: f.months.map((m) => m.total.minor) }], height: 220 }),
+        h('ul', { class: 'list' }, f.months.map((m) => h('li', { style: { alignItems: 'flex-start' } }, h('div', { style: { width: '90px', flex: 'none' }, class: 'strong' }, monthLong(m.month)), h('div', { class: 'grow stack', style: { gap: '4px' } }, m.items.map((i) => h('div', { class: 'row' }, utBlock(i.payee, 'grow'), h('span', { class: 'muted small' }, i.remaining ? i.remaining + ' left' : 'last one'), h('span', { class: 'amount' }, money(i.amount))))), h('span', { class: 'strong amount' }, money(m.total)))))) : emptyState('card', 'No installments running', 'Card purchases paid in installments are projected here.'),
+      () => simpleTable([{ label: 'Month' }, { label: 'Payee' }, { label: 'Amount', num: true }, { label: 'Left after', num: true }], f.months.flatMap((m) => m.items.map((i) => [monthLong(m.month), ut(i.payee), h('span', { class: 'amount' }, money(i.amount)), String(i.remaining)]))));
+    return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } }, card('Installments still to come', f.months.length ? money({ minor: total, currency: cur }, { whole: true }) + ' over the next ' + plural(f.months.length, 'month') : 'Nothing scheduled', view),
+      card('Owed on cards now', 'Billed or upcoming statements not yet paid by a bank debit', { toggle: null, body: f.outstanding.length ? simpleTable([{ label: 'Card' }, { label: 'Unpaid', num: true }, { label: 'No bill date yet', num: true }], f.outstanding.map((o) => [utBlock(o.account_name), h('span', { class: 'amount strong' }, money(o.unpaid)), o.undated.minor ? h('span', { class: 'amount' }, money(o.undated)) : '–'])) : emptyState('circlecheck', 'Nothing owed') }));
+  }],
+  ['foreign', 'Abroad', async () => {
+    const r = await api.get('/api/v1/reports/foreign', scope());
+    return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
+      card('Purchases in other currencies', 'What the issuer billed in shekels, and the rate that implies, fees included', { toggle: null, body: r.summary.length ? simpleTable([{ label: 'Currency' }, { label: 'Purchases', num: true }, { label: 'Original', num: true }, { label: 'Billed', num: true }, { label: 'Average rate', num: true }, { label: 'Range', num: true }], r.summary.map((s) => [s.currency, String(s.count), h('span', { class: 'amount' }, money(s.original)), h('span', { class: 'amount' }, money(s.billed)), h('span', { class: 'amount strong' }, s.average_rate.toFixed(3)), h('span', { class: 'amount muted' }, s.min_rate.toFixed(3) + ' – ' + s.max_rate.toFixed(3))])) : emptyState('card', 'No foreign purchases in this period') }),
+      r.purchases.length > 0 && card('Each purchase', null, { toggle: null, body: simpleTable([{ label: 'Date' }, { label: 'Payee' }, { label: 'Original', num: true }, { label: 'Billed', num: true }, { label: 'Rate', num: true }], r.purchases.map((p) => [date(p.date), utBlock(p.payee), h('span', { class: 'amount' }, money(p.original)), h('span', { class: 'amount' }, money(p.billed)), h('span', { class: 'amount' }, p.rate.toFixed(3))])) }));
+  }],
+  ['anomalies', 'Unusual', async () => {
+    const r = await api.get('/api/v1/reports/anomalies', scope());
+    return card('Worth a second look', 'Purchases far above what is usual for their category, and recurring payments that started recently', { toggle: null, body: r.items.length ? h('ul', { class: 'list' }, r.items.map((a) => h('li', null, h('span', { class: ['ico', a.kind === 'OUTLIER' && 'warn'] }, icon(a.kind === 'OUTLIER' ? 'alert' : 'swap')),
+      h('div', { class: 'grow', style: { minWidth: 0 } }, utBlock(a.payee, 'strong'), h('div', { class: 'muted small' }, date(a.date) + ' · ' + (a.kind === 'OUTLIER' ? (a.category_name || '') + ' · ' : '') + a.detail)), h('span', { class: 'amount strong' }, money(a.amount)),
+      a.transaction_id && h('a', { class: 'btn ghost sm', href: '#/transactions?q=' + encodeURIComponent(a.payee) }, 'Find', icon('right', 'sm'))))) : emptyState('circlecheck', 'Nothing unusual', 'Needs about eight purchases in a category before outliers can be judged.') });
+  }],
   ['recurring', 'Recurring', async () => {
     const r = await api.get('/api/v1/reports/recurring', { owner: state.filters.owner }); const it = r.items;
     return card('Recurring payments', it.length ? 'About ' + money({ minor: it.reduce((a, x) => a + x.monthly_cost.minor, 0), currency: cur }, { whole: true }) + ' a month' : 'Detected from repeated charges to the same payee', { toggle: null, body: it.length ? simpleTable([{ label: 'Payee' }, { label: 'How often' }, { label: 'Typical', num: true }, { label: 'Per month', num: true }, { label: 'Last paid' }, { label: 'Next expected' }],
@@ -63,7 +84,7 @@ const TABS = [
 ];
 
 function card(title, sub, view) {
-  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, title), h('div', { class: 'sub' }, sub)), view.toggle), view.body);
+  return h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, title), sub && h('div', { class: 'sub' }, sub)), view.toggle), view.body);
 }
 
 export default {

@@ -226,6 +226,20 @@ function report(name, p) {
     for (const t of subs) (by[t.payee_raw] ||= []).push(t);
     return { items: Object.entries(by).map(([payee, l]) => { const ds = l.map((t) => t.date).sort(); const mean = Math.round(l.reduce((s, t) => s - t.amount.minor, 0) / l.length); return { payee, cadence: 'MONTHLY', count: l.length, typical: M(mean), fixed: true, monthly_cost: M(mean), first_date: ds[0], last_date: ds[ds.length - 1], next_expected: addD(ds[ds.length - 1], 30), active: true }; }).sort((a, b) => b.monthly_cost.minor - a.monthly_cost.minor) };
   }
+  if (name === 'installments') {
+    const latest = {}; for (const t of TX) if (t.total_installments && t.current_installment < t.total_installments) { const k = t.account_id + t.payee_raw.replace(/ - תשלום.*/, ''); if (!latest[k] || t.current_installment > latest[k].current_installment) latest[k] = t; }
+    const byM = {}; for (const t of Object.values(latest)) { const base = t.bill_date.slice(0, 7); for (let i = 1; i <= t.total_installments - t.current_installment; i++) { const m = monthsBetween(base, base)[0]; const d = new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7) - 1 + i, 1)).toISOString().slice(0, 7); (byM[d] ||= { month: d, total: 0, items: [] }); byM[d].total += -t.amount.minor; byM[d].items.push({ payee: t.payee_raw.replace(/ - תשלום.*/, ''), amount: M(-t.amount.minor), remaining: t.total_installments - t.current_installment - i }); } }
+    return { months: Object.values(byM).sort((a, b) => (a.month < b.month ? -1 : 1)).map((x) => ({ ...x, total: M(x.total) })), outstanding: ACC.filter((a) => a.type === 'CREDIT_CARD').map((a) => { const u = allStatements().filter((s) => s.account_id === a.id && s.status !== 'PAID').reduce((x, s) => x + s.expected.minor - s.settled.minor, 0); return { account_id: a.id, account_name: a.name, owner: a.owner, unpaid: M(u), undated: M(0) }; }) };
+  }
+  if (name === 'foreign') {
+    const list = TX.filter((t) => t.original && (!p.from || t.date >= p.from)).map((t) => ({ transaction_id: t.id, date: t.date, payee: t.payee_raw, original: t.original, billed: M(-t.amount.minor), rate: -t.amount.minor / t.original.minor })).sort((a, b) => (a.date < b.date ? -1 : 1));
+    const sum = {}; for (const x of list) { const c = x.original.currency; const s = (sum[c] ||= { currency: c, count: 0, original: 0, billed: 0, min_rate: 99, max_rate: 0 }); s.count++; s.original += x.original.minor; s.billed += x.billed.minor; s.min_rate = Math.min(s.min_rate, x.rate); s.max_rate = Math.max(s.max_rate, x.rate); }
+    return { purchases: list, summary: Object.values(sum).map((s) => ({ ...s, original: M(s.original, s.currency), billed: M(s.billed), average_rate: s.billed / s.original })) };
+  }
+  if (name === 'anomalies') {
+    const big = TX.filter((t) => t.kind === 'PURCHASE' && t.category_id === 'cat_elec' && t.amount.minor < -80000).slice(0, 2).map((t) => ({ kind: 'OUTLIER', transaction_id: t.id, date: t.date, payee: t.payee_raw, category_id: t.category_id, category_name: 'Electronics', amount: M(-t.amount.minor), score: 3.4, detail: "far above this category's usual purchases" }));
+    return { items: [...big, { kind: 'NEW_RECURRING', date: '2026-08-14', payee: 'KSP מחשבים - תשלום 1 מתוך 6', amount: M(42000), score: 3, detail: 'MONTHLY payment that started recently', category_name: '' }] };
+  }
   if (name === 'warnings') {
     const wife = TX.filter((t) => t.account_id === 'acc_bank' && t.category_id === 'cat_wife');
     return { hints_configured: true, unlinked_card_payments: unlinked ? [{ transaction_id: unlinked.bank.id, date: unlinked.bank.date, payee: unlinked.bank.payee_raw, amount: M(Math.abs(unlinked.bank.amount.minor)), counted: true, hidden: false, has_proposal: true }] : [], counted: M(unlinked ? Math.abs(unlinked.bank.amount.minor) : 0), hidden: M(0), linkable: unlinked ? 1 : 0, wife_count: wife.length };

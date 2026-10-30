@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { state, periodRange, cards as cardAccounts, setFilters } from '../state.js';
 import { money, compact, amount, date, weekday, relDay, plural, monthShort, addMonths } from '../format.js';
 import { timeline, lines, legend, SERIES } from '../charts.js';
-import { segmented, selectField, statusBadge, drawer, toast, emptyState, tipRows, categoryChip, chartTable, simpleTable } from '../ui.js';
+import { segmented, selectField, statusBadge, drawer, toast, emptyState, tipRows, categoryChip, chartTable, simpleTable, pickCategory } from '../ui.js';
 import { refreshBadges } from '../main.js';
 import { accountEditor } from '../accounts.js';
 
@@ -87,7 +87,8 @@ export default {
         h('div', { class: 'grow', style: { minWidth: 0 } }, h('div', { class: 'strong' }, utBlock(p.bank_payee), ),
           h('div', { class: 'muted small' }, date(p.bank_date, { weekday: true }) + ' · ', h('span', { class: 'amount' }, money(p.amount)), ' matches ', ut(p.account_name), ' bill of ' + date(p.bill_date, { year: false }) + (p.exact ? '' : ' (amount differs)'))),
         h('button', { class: 'btn sm', type: 'button', onclick: () => confirmOne(p) }, 'Confirm')))),
-      !props.items.length && warn.unlinked_card_payments.length > 0 && h('div', { class: 'alert warn' }, icon('alert'), h('div', null, plural(warn.unlinked_card_payments.length, 'bank debit'), ' look like card payments but match no bill. If the card is not tracked here, put them in a category such as “Wife’s Cards”.')));
+      !props.items.length && warn.unlinked_card_payments.length > 0 && h('div', { class: 'alert warn' }, icon('alert'), h('div', null, plural(warn.unlinked_card_payments.length, 'bank debit'), ' look like card payments but match no bill (', money(warn.counted), '). If the card is not tracked here, put them in a category such as “Wife’s Cards”.'),
+        h('button', { class: 'btn sm', type: 'button', onclick: (e) => pickCategory(e.currentTarget, { allowClear: false, onPick: async (c) => { try { await api.patch('/api/v1/transactions', { ids: warn.unlinked_card_payments.map((u) => u.transaction_id), category_id: c.id }); toast(plural(warn.unlinked_card_payments.length, 'debit') + ' set to ' + c.name_en); rerender(true); } catch (err) { toast(err.message); } } }) }, icon('tag', 'sm'), 'Categorize them…')));
     async function confirmOne(p) { try { await api.post('/api/v1/settlements/proposals/confirm', { statement_id: p.statement_id, account_id: p.account_id, bill_date: p.bill_date, bank_transaction_id: p.bank_tx_id }); toast('Matched ' + p.account_name + ' bill to the bank debit'); refreshBadges(); rerender(true); } catch (e) { toast(e.message); } }
     async function confirmAll() { try { const r = await api.post('/api/v1/settlements/proposals/confirm-all'); toast(plural(r.confirmed, 'bill') + ' matched'); rerender(true); } catch (e) { toast(e.message); } }
 

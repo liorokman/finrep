@@ -5,7 +5,7 @@ const b = await launch({ width: 1440, height: 1000 });
 let failed = 0;
 const check = (ok, msg) => { console.log((ok ? 'ok   ' : 'FAIL ') + msg); if (!ok) failed++; };
 try {
-  for (const view of ['overview', 'transactions', 'cards', 'import', 'reports', 'reports/heatmap', 'categories', 'settings']) {
+  for (const view of ['overview', 'transactions', 'cards', 'import', 'reports', 'reports/heatmap', 'reports/installments', 'reports/foreign', 'reports/anomalies', 'categories', 'settings']) {
     await b.open(`${base}/?mock=1&theme=light#/${view}`, 1500);
     const err = await b.eval(`(document.querySelector('.alert.warn')||{}).textContent || ''`);
     const cards = await b.eval(`document.querySelectorAll('.card').length`);
