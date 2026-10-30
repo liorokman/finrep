@@ -19,13 +19,24 @@ throwaway registry on the Cosmos host itself (Docker allows plain HTTP to `local
 
 The compose file uses `localhost:5000/finrep:0.1.0`. For a registry such as ghcr.io, push there and change the tag.
 
-## 3. Import into Cosmos
-URLs -> Add -> Import compose -> `cosmos-compose.json`, replace the placeholders:
-- `<SESSION_SECRET>`: `head -c 48 /dev/urandom | base64` (at least 32 bytes; signs the session cookies)
-- `<MCP_TOKEN>`: `head -c 32 /dev/urandom | base64`, or delete that line to switch the HTTP MCP endpoint off
+## 3. Secrets and import into Cosmos
+Cosmos did not pass secret-looking environment values through unchanged, so the two secrets are read from files in
+the data volume (`FINREP_SESSION_SECRET_FILE`, `FINREP_MCP_TOKEN_FILE`). Create them once, owned by UID 10001:
 
-Leave the route's **Authentication required OFF**: the app does its own OIDC login. The MCP endpoint
-(`https://finrep.example.com/mcp`) uses the bearer token and never opens the web interface.
+    head -c 48 /dev/urandom | base64 -w0     # session secret (at least 32 bytes; signs the login cookies)
+    head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '='   # MCP bearer token; drop the env line to disable /mcp
+
+    printf %s "$VALUE" | ssh cosmos 'docker run --rm -i --user root --entrypoint sh -v finrep-data:/data \
+      localhost:5000/finrep:0.1.1 -c "cat > /data/mcp_token && chown 10001:10001 /data/mcp_token && chmod 400 /data/mcp_token"'
+
+Then create or update the service. Cosmos replaces the container and the route when the name already exists:
+
+    curl -sk -X POST -H "Authorization: Bearer $COSMOS_TOKEN" -H "Content-Type: application/json" \
+      --data @deploy/cosmos/cosmos-compose.json https://cosmos.example.com/cosmos/api/docker-service
+
+(or Cosmos UI: URLs -> Add -> Import compose). Leave the route's **Authentication required OFF**: the app does its
+own OIDC login. The MCP endpoint (`https://finrep.example.com/mcp`) takes the bearer token and never
+opens the web interface.
 
 ## 4. Load your existing data (once)
 Stop the container, copy a consistent snapshot into the volume, start it again:

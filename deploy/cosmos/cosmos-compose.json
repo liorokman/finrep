@@ -1,19 +1,21 @@
 {
   "services": {
     "finrep": {
-      "image": "localhost:5000/finrep:0.1.0",
+      "image": "localhost:5000/finrep:0.1.1",
       "container_name": "finrep",
       "restart": "unless-stopped",
       "read_only": true,
-      "tmpfs": ["/tmp:size=64M"],
+      "tmpfs": [
+        "/tmp:size=64M"
+      ],
       "environment": [
         "FINREP_AUTH=on",
         "FINREP_OIDC_ISSUER=https://auth.example.com/application/o/fin-rep/",
         "FINREP_OIDC_CLIENT_ID=<OIDC_CLIENT_ID>",
         "FINREP_OIDC_REDIRECT=https://finrep.example.com/auth/callback",
         "FINREP_OIDC_REQUIRED_GROUP=FinRep_Users",
-        "FINREP_SESSION_SECRET=<SESSION_SECRET>",
-        "FINREP_MCP_TOKEN=<MCP_TOKEN>",
+        "FINREP_SESSION_SECRET_FILE=/data/session_secret",
+        "FINREP_MCP_TOKEN_FILE=/data/mcp_token",
         "FINREP_TRUSTED_PROXIES=172.16.0.0/12,10.0.0.0/8",
         "FINREP_LOG_LEVEL=info",
         "GOMEMLIMIT=200MiB",
