@@ -59,6 +59,9 @@ func New(d Deps) (*Server, error) {
 	return s, nil
 }
 
+// SecurityHeaders wraps another handler (e.g. the static UI) with the same response headers the API sets.
+func (s *Server) SecurityHeaders(next http.Handler) http.Handler { return s.securityHeaders(next) }
+
 // Handler returns the full handler, middleware included.
 func (s *Server) Handler() http.Handler { return s.handler }
 

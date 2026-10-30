@@ -1,0 +1,115 @@
+/* Design tokens. Colors follow the validated data-viz palette; every surface, ink and chart color is a
+   role, so light and dark swap in one place. Spacing is a 4px scale. */
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --page: #f4f4f1;
+  --surface: #fcfcfb;        /* cards and charts: the surface the palette was validated on */
+  --surface-2: #f6f6f3;      /* wells, table headers, hover washes */
+  --sidebar: #efefeb;
+  --overlay: rgba(11, 11, 11, 0.42);
+
+  /* ink: all three clear 4.5:1 on --surface; --ink-muted is for chart axes only (3.4:1) */
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #6b6a65;
+  --ink-muted: #898781;
+
+  /* lines */
+  --line: #e4e3dc;
+  --line-strong: #c3c2b7;
+  --ring: rgba(11, 11, 11, 0.10);
+
+  /* accent */
+  --accent: #2a78d6;
+  --accent-hover: #256abf;
+  --accent-ink: #ffffff;     /* text on --accent */
+  --accent-text: #256abf;    /* links and accent text on surfaces */
+  --accent-wash: rgba(42, 120, 214, 0.10);
+  --accent-wash-strong: rgba(42, 120, 214, 0.18);
+
+  /* meaning (always paired with an icon or a label) */
+  --pos: #006300;
+  --good: #0ca30c;
+  --warn: #fab219;
+  --warn-text: #8a5a00;
+  --serious: #ec835a;
+  --crit: #d03b3b;
+  --crit-text: #b02a2a;
+
+  /* categorical series, fixed order */
+  --s1: #2a78d6;  /* blue */
+  --s2: #eb6834;  /* orange */
+  --s3: #1baf7a;  /* aqua */
+  --s4: #eda100;  /* yellow */
+  --s5: #e87ba4;  /* magenta */
+  --s6: #008300;  /* green */
+  --s7: #6250d6;  /* violet */
+  --s8: #e34948;  /* red */
+
+  /* sequential: blue, light to dark */
+  --seq-100: #cde2fb; --seq-200: #9ec5f4; --seq-300: #6da7ec; --seq-400: #3987e5;
+  --seq-500: #256abf; --seq-600: #184f95; --seq-700: #0d366b;
+  --seq-ink-light: #0b0b0b; --seq-ink-dark: #ffffff;
+  --diverge-mid: #f0efec;
+
+  /* type */
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Hebrew", "Arimo", "Arial Hebrew", sans-serif;
+  --fs-xs: 12px; --fs-sm: 13px; --fs-base: 14px; --fs-md: 16px; --fs-lg: 20px; --fs-xl: 28px; --fs-hero: 48px;
+  --lh: 1.45;
+
+  /* space, radius, elevation */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px; --s-7: 48px;
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px;
+  --shadow-card: 0 1px 2px rgba(11, 11, 11, 0.04);
+  --shadow-pop: 0 10px 30px rgba(11, 11, 11, 0.16), 0 0 0 1px var(--ring);
+
+  --sidebar-w: 236px;
+  --content-max: 1320px;
+
+  /* Where "start" is for user text that is truncated or aligned in a column. Flipped for a mirrored UI. */
+  --ui-start: left;
+  --ui-end: right;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #222221;
+  --sidebar: #131312;
+  --overlay: rgba(0, 0, 0, 0.6);
+
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --ink-3: #a3a29a;
+  --ink-muted: #898781;
+
+  --line: #2c2c2a;
+  --line-strong: #383835;
+  --ring: rgba(255, 255, 255, 0.10);
+
+  --accent: #5598e7;
+  --accent-hover: #6da7ec;
+  --accent-ink: #0b0b0b;
+  --accent-text: #6da7ec;
+  --accent-wash: rgba(85, 152, 231, 0.14);
+  --accent-wash-strong: rgba(85, 152, 231, 0.24);
+
+  --pos: #0ca30c;
+  --warn-text: #fab219;
+  --crit-text: #ec7a7a;
+
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+
+  --seq-100: #184f95; --seq-200: #1c5cab; --seq-300: #256abf; --seq-400: #3987e5;
+  --seq-500: #5598e7; --seq-600: #86b6ef; --seq-700: #b7d3f6;
+  --diverge-mid: #383835;
+
+  --shadow-card: none;
+  --shadow-pop: 0 14px 36px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--ring);
+}
+
+:root[dir="rtl"] { --ui-start: right; --ui-end: left; }

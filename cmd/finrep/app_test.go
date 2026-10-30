@@ -161,3 +161,34 @@ func TestMCPTokenDoesNotOpenTheRESTAPI(t *testing.T) {
 		t.Fatalf("the MCP token must not unlock the REST API: %d", rec.Code)
 	}
 }
+
+func TestUIIsServedBesideTheAPI(t *testing.T) {
+	a, _, err := newApp(t, &conf.Config{MaxUploadMB: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		a.handler.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		return rec
+	}
+	ui := get("/")
+	if ui.Code != 200 || !strings.Contains(ui.Body.String(), `id="app"`) {
+		t.Fatalf("%d", ui.Code)
+	}
+	if csp := ui.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || ui.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("the UI needs the same security headers as the API: %q", csp)
+	}
+	if rec := get("/api/v1/categories"); rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("api: %d", rec.Code)
+	}
+	if rec := get("/healthz"); rec.Code != 200 {
+		t.Fatalf("healthz: %d", rec.Code)
+	}
+	if rec := get("/api/v1/nope"); rec.Code != 404 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("api 404 must stay JSON: %d %s", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	if rec := get("/definitely/not/here"); rec.Code != 404 {
+		t.Fatalf("%d", rec.Code)
+	}
+}

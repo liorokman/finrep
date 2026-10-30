@@ -20,6 +20,7 @@ import (
 	"github.com/liorokman/finrep/internal/reports"
 	"github.com/liorokman/finrep/internal/settings"
 	"github.com/liorokman/finrep/internal/store"
+	"github.com/liorokman/finrep/internal/webui"
 )
 
 // app is the assembled application.
@@ -112,7 +113,11 @@ func build(ctx context.Context, cfg *conf.Config, st *store.Store) (*app, error)
 	// /mcp is outside the session gate: agents authenticate with the static bearer token instead.
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", logged(mcpsrv.HTTPHandler(mcpServer(st), cfg.MCPToken)))
-	mux.Handle("/", srv.Handler())
+	api := srv.Handler()
+	for _, prefix := range []string{"/api/", "/auth/", "/healthz"} {
+		mux.Handle(prefix, api)
+	}
+	mux.Handle("/", srv.SecurityHeaders(webui.Handler()))
 	if cfg.MCPToken != "" {
 		slog.Info("MCP over HTTP enabled", "path", "/mcp")
 	}

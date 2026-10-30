@@ -1,0 +1,97 @@
+import { h, mount, ut, utBlock } from '../dom.js';
+import { icon } from '../icons.js';
+import { api } from '../api.js';
+import { state, periodRange, cards as cardAccounts } from '../state.js';
+import { money, compact, amount, date, weekday, relDay, plural } from '../format.js';
+import { timeline, SERIES } from '../charts.js';
+import { segmented, selectField, statusBadge, drawer, toast, emptyState, tipRows } from '../ui.js';
+import { refreshBadges } from '../main.js';
+
+const F = { status: 'ALL', card: '' };
+const owing = (s) => Math.max(0, s.expected.minor - s.settled.minor);
+
+export default {
+  id: 'cards', title: 'Cards & bills', filters: ['owner'],
+  sub: () => 'What each card owes, when the bank is charged, and which debit paid what',
+
+  async render() {
+    const owner = state.filters.owner || undefined;
+    const from = periodRange('12m').from;
+    const [stm, up, props, warn] = await Promise.all([
+      api.get('/api/v1/statements', { owner, from }), api.get('/api/v1/billing/upcoming', { owner }),
+      api.get('/api/v1/settlements/proposals'), api.get('/api/v1/reports/warnings', { owner }),
+    ]);
+    const all = stm.items;
+    const cards = cardAccounts().filter((c) => !owner || c.owner === owner);
+
+    // ----- card tiles -----
+    const tiles = cards.map((c) => {
+      const mine = all.filter((s) => s.account_id === c.id);
+      const unpaid = mine.filter((s) => s.status !== 'PAID');
+      const owed = unpaid.reduce((a, s) => a + owing(s), 0);
+      const next = unpaid.filter((s) => s.bill_date >= state.today).sort((a, b) => (a.bill_date < b.bill_date ? -1 : 1))[0];
+      const overdue = unpaid.filter((s) => s.bill_date < state.today).reduce((a, s) => a + owing(s), 0);
+      return h('button', { class: ['card tile cardtile', F.card === c.id && 'on'], type: 'button', 'aria-pressed': String(F.card === c.id), onclick: () => { F.card = F.card === c.id ? '' : c.id; rerender(); } },
+        h('div', { class: 'row', style: { gap: '8px' } }, icon('card', 'sm'), h('span', { class: 'strong grow', style: { textAlign: 'start' } }, ut(c.name)), c.owner && h('span', { class: 'muted xs' }, c.owner)),
+        h('div', { class: 'label', style: { marginTop: '14px' } }, 'Owed right now'), h('div', { class: 'value amount' }, money({ minor: owed, currency: 'ILS' }, { whole: true })),
+        h('div', { class: 'foot', style: { flexDirection: 'column', alignItems: 'flex-start', gap: '2px' } },
+          overdue > 0 && h('span', { class: 'delta up-bad' }, icon('clock', 'sm'), money({ minor: overdue, currency: 'ILS' }, { whole: true }) + ' billed, not yet paid'),
+          next ? h('span', { class: 'muted small' }, 'Next bill ' + weekday(next.bill_date) + ' ' + date(next.bill_date, { year: false }) + ' · ' + money(next.expected, { whole: true })) : h('span', { class: 'muted small' }, 'No bill coming up')));
+    });
+
+    // ----- matching -----
+    const matchCard = (props.items.length || warn.unlinked_card_payments.length) && h('div', { class: 'card span-5' },
+      h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'Match bank debits to bills'), h('div', { class: 'sub' }, 'Linking a debit to its bill keeps card payments out of your spending totals')),
+        props.items.length > 1 && h('button', { class: 'btn primary sm', type: 'button', onclick: confirmAll }, icon('check', 'sm'), 'Confirm all ' + props.items.length)),
+      h('ul', { class: 'list' }, props.items.map((p) => h('li', null,
+        h('span', { class: 'ico' }, icon('link')),
+        h('div', { class: 'grow', style: { minWidth: 0 } }, h('div', { class: 'strong' }, utBlock(p.bank_payee), ),
+          h('div', { class: 'muted small' }, date(p.bank_date, { weekday: true }) + ' · ', h('span', { class: 'amount' }, money(p.amount)), ' matches ', ut(p.account_name), ' bill of ' + date(p.bill_date, { year: false }) + (p.exact ? '' : ' (amount differs)'))),
+        h('button', { class: 'btn sm', type: 'button', onclick: () => confirmOne(p) }, 'Confirm')))),
+      !props.items.length && warn.unlinked_card_payments.length > 0 && h('div', { class: 'alert warn' }, icon('alert'), h('div', null, plural(warn.unlinked_card_payments.length, 'bank debit'), ' look like card payments but match no bill. If the card is not tracked here, put them in a category such as “Wife’s Cards”.')));
+    async function confirmOne(p) { try { await api.post('/api/v1/settlements/proposals/confirm', { statement_id: p.statement_id, account_id: p.account_id, bill_date: p.bill_date, bank_transaction_id: p.bank_tx_id }); toast('Matched ' + p.account_name + ' bill to the bank debit'); refreshBadges(); rerender(true); } catch (e) { toast(e.message); } }
+    async function confirmAll() { try { const r = await api.post('/api/v1/settlements/proposals/confirm-all'); toast(plural(r.confirmed, 'bill') + ' matched'); rerender(true); } catch (e) { toast(e.message); } }
+
+    // ----- outflow timeline -----
+    const days = up.items.filter((d) => !F.card || d.statements.some((s) => s.account_id === F.card));
+    const horizon = days.slice(0, 8);
+    const total30 = days.filter((d) => d.date <= addDays(state.today, 30)).reduce((a, d) => a + d.total.minor, 0);
+    const outflow = h('div', { class: ['card', matchCard ? 'span-7' : 'span-12'] }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'Coming out of the bank'), h('div', { class: 'sub' }, days.length ? money({ minor: total30, currency: 'ILS' }, { whole: true }) + ' in the next 30 days' : 'Nothing waiting to be paid'))),
+      days.length ? timeline(horizon.map((d) => ({ value: d.total.minor, when: weekday(d.date) + ' ' + date(d.date, { year: false }), sub: d.date < state.today ? 'overdue' : relDay(d.date, state.today), label: date(d.date, { weekday: true }), rows: d.statements.map((s) => ({ name: s.account_name, value: money({ minor: owing(s), currency: 'ILS' }) })) })), { currency: 'ILS' }) : emptyState('circlecheck', 'All bills are paid'));
+
+    // ----- statements table -----
+    const STAT = [{ value: 'ALL', label: 'All' }, { value: 'TOPAY', label: 'To pay' }, { value: 'UPCOMING', label: 'Upcoming' }, { value: 'PAID', label: 'Paid' }];
+    let rows = all.filter((s) => (!F.card || s.account_id === F.card) && (F.status === 'ALL' || (F.status === 'TOPAY' ? s.status === 'BILLED' || s.status === 'PARTIAL' : s.status === F.status)));
+    rows = rows.sort((a, b) => (a.bill_date < b.bill_date ? 1 : -1));
+    const table = h('table', { class: 't', 'aria-label': 'Statements' }, h('thead', null, h('tr', null, ['Bill date', 'Card', 'Status', 'Charges', 'You pay', 'Bank debit'].map((c, i) => h('th', { scope: 'col', class: i === 3 || i === 4 ? 'num' : '' }, c)))),
+      h('tbody', null, rows.map((s) => h('tr', null,
+        h('td', null, h('button', { class: 'rowlink', type: 'button', onclick: () => open(s) }, h('div', { class: 'strong' }, date(s.bill_date, { year: false })), h('div', { class: 'sub' }, weekday(s.bill_date) + ' · ' + s.bill_date.slice(0, 4)))),
+        h('td', null, utBlock(s.account_name)), h('td', null, statusBadge(s.status)),
+        h('td', { class: 'num' }, plural(s.tx_count, 'line')),
+        h('td', { class: 'num' }, h('div', { class: 'strong' }, amount(s.expected)), s.gross.minor !== s.expected.minor && h('div', { class: 'sub' }, h('span', { class: 'amount' }, 'of ' + money(s.gross) + ' bought'))),
+        h('td', null, s.settlements.length ? s.settlements.map((x) => h('div', { class: 'small' }, h('span', { class: 'amount' }, money(x.amount)), h('span', { class: 'muted' }, ' · ' + date(x.bank_date, { year: false })))) : h('span', { class: 'muted small' }, s.status === 'UPCOMING' ? 'Not charged yet' : 'Not matched'))))));
+    const stmtCard = h('div', { class: 'card flush' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'Statements'), h('div', { class: 'sub' }, F.card ? 'Filtered to one card. Click its tile again to clear.' : 'Every bill, newest first')),
+      segmented('Status', STAT, F.status, (v) => { F.status = v; rerender(true); })),
+      rows.length ? h('div', { class: 'table-wrap' }, table) : emptyState('file', 'No statements here', 'Import a card statement to see its bill.', h('a', { class: 'btn sm', href: '#/import' }, 'Import a file')));
+
+    function open(s) {
+      let d;
+      const body = h('div', { class: 'stack' },
+        h('div', null, h('div', { class: 'row' }, utBlock(s.account_name, 'strong'), statusBadge(s.status)), h('div', { class: 'muted small', style: { marginTop: '4px' } }, 'Billed ' + date(s.bill_date, { weekday: true }))),
+        h('dl', { class: 'kv' }, h('dt', null, 'Charges'), h('dd', null, plural(s.tx_count, 'line')),
+          h('dt', null, 'As bought'), h('dd', { class: 'amount' }, money(s.gross)), s.gross.minor !== s.expected.minor && [h('dt', null, 'Employer covers'), h('dd', { class: 'amount' }, money({ minor: s.gross.minor - s.expected.minor, currency: s.gross.currency }))],
+          h('dt', null, 'You pay'), h('dd', { class: 'amount strong' }, money(s.expected)), s.printed && [h('dt', null, 'Printed total'), h('dd', { class: 'amount' }, money(s.printed) + (s.printed.minor === s.expected.minor ? '  ✓ matches' : ''))],
+          h('dt', null, 'Paid'), h('dd', { class: 'amount' }, money(s.settled))),
+        h('div', null, h('h3', { style: { marginBottom: '8px' } }, 'Bank debits'), s.settlements.length ? h('ul', { class: 'list' }, s.settlements.map((x) => h('li', null, h('div', { class: 'grow' }, utBlock(x.bank_payee), h('div', { class: 'muted small' }, date(x.bank_date, { weekday: true }) + (x.source === 'AUTO' ? ' · matched automatically' : ' · matched by you'))), h('span', { class: 'amount strong' }, money(x.amount)),
+          h('button', { class: 'btn ghost sm', type: 'button', title: 'Unlink this debit', onclick: async () => { try { await api.del('/api/v1/settlements/' + x.id); d.close(); toast('Unlinked. It will not be suggested again.'); rerender(true); } catch (e) { toast(e.message); } } }, icon('undo', 'sm'), 'Unlink')))) : h('p', { class: 'muted small' }, 'No bank debit is linked to this bill yet.')));
+      d = drawer('Statement', body);
+    }
+
+    let host;
+    function rerender() { document.dispatchEvent(new CustomEvent('finrep:rerender')); }
+    return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
+      tiles.length ? h('div', { class: 'cardtiles' }, tiles) : null, h('div', { class: 'grid' }, outflow, matchCard || null), stmtCard);
+  },
+};
+
+function addDays(iso, n) { const t = new Date(iso + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
