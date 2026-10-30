@@ -632,3 +632,23 @@ func TestRuleDatedChargesJoinTheRecordedStatement(t *testing.T) {
 		t.Fatal("straggler not linked")
 	}
 }
+
+func TestAHandfulOfShekelsShortStillPaysALargeStatement(t *testing.T) {
+	e := newEnv(t)
+	big := e.purchase(e.cal, "2026-06-12", 375083, "BIG")   // 3,750.83
+	small := e.purchase(e.isra, "2026-06-12", 465, "SMALL") // 4.65
+	e.statement(e.cal, "2026-07-10", big)
+	e.statement(e.isra, "2026-07-10", small)
+	e.debit("2026-07-10", 374833, "כרטיסי אשראי-י") // 2.50 short, well inside 0.5%
+	e.debit("2026-07-10", 900, "ישראכרט בע\"מ-י")   // a 9.00 debit is not the 4.65 statement
+
+	if n, err := e.s.ConfirmAll(ctx); err != nil || n != 1 {
+		t.Fatalf("confirmed %d: %v", n, err)
+	}
+	if st := e.stmt(e.cal, "2026-07-10"); st.Status != Paid {
+		t.Fatalf("a debit 2.50 short of a 3,750.83 statement pays it: %+v", st)
+	}
+	if st := e.stmt(e.isra, "2026-07-10"); len(st.Settlements) != 0 {
+		t.Fatalf("a small statement must not match a larger debit: %+v", st)
+	}
+}

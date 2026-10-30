@@ -112,6 +112,7 @@ func parseIsracardRows(rows []pdfRow, filename string) (*Parsed, error) {
 		return nil, fmt.Errorf("%s: no statement total found (expected 'סה\"כ חיוב לתאריך'); unsupported layout", filename)
 	}
 	_ = headerBill
+	ShiftSaturdayBillDates(p)
 	PairCoverage(p)
 	return p, nil
 }

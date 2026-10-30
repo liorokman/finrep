@@ -154,6 +154,7 @@ func parseLeumiCardRows(rows []pdfRow, filename string) (*Parsed, error) {
 	if len(p.Statements) == 0 {
 		return nil, fmt.Errorf("%s: no statement total found (expected 'סה\"כ חיוב לחשבון'); unsupported layout", filename)
 	}
+	ShiftSaturdayBillDates(p)
 	PairCoverage(p)
 	return p, nil
 }

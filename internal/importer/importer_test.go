@@ -118,6 +118,30 @@ func TestOverlappingExportsInsertOnlyTheExtraRows(t *testing.T) {
 	}
 }
 
+func TestSameChargeListedTwiceWithAStrayNumberIsOneCharge(t *testing.T) {
+	e := setup(t)
+	// A deferred charge is listed as information in one statement and again, when due, in the next, where
+	// the merchant picked up a stray "4". It is one charge.
+	info := &Parsed{Source: SourceCalPDF, Filename: "info.pdf", Last4: "1001", Lines: []Line{purchase("2025-08-27", -41400, "NEXT ONLINE LEICEST", "2025-10-10")}}
+	due := &Parsed{Source: SourceCalPDF, Filename: "due.pdf", Last4: "1001", Lines: []Line{purchase("2025-08-27", -41400, "NEXT ONLINE LEICEST 4", "2025-10-10")}}
+	if r, err := e.im.Commit(ctx, e.card.ID, info); err != nil || r.Inserted != 1 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if pv, err := e.im.Preview(ctx, e.card.ID, due); err != nil || pv.New != 0 || pv.Duplicates != 1 {
+		t.Fatalf("preview: %+v %v", pv, err)
+	}
+	if r, err := e.im.Commit(ctx, e.card.ID, due); err != nil || r.Inserted != 0 || r.Duplicates != 1 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	// Two such charges inside one file are two charges, and a different amount is a different charge.
+	two := &Parsed{Source: SourceCalPDF, Filename: "two.pdf", Last4: "1001", Lines: []Line{
+		purchase("2025-09-01", -1000, "KIOSK 3", "2025-10-10"), purchase("2025-09-01", -1000, "KIOSK 3", "2025-10-10"),
+		purchase("2025-08-27", -41500, "NEXT ONLINE LEICEST 4", "2025-10-10")}}
+	if r, err := e.im.Commit(ctx, e.card.ID, two); err != nil || r.Inserted != 3 {
+		t.Fatalf("%+v %v", r, err)
+	}
+}
+
 func TestPreviewMatchesCommitAndChangesNothing(t *testing.T) {
 	e := setup(t)
 	p := &Parsed{Source: SourceCSV, Filename: "f", Lines: []Line{

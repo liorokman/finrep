@@ -646,3 +646,29 @@ func TestWarningsAboutUnlinkedCardPayments(t *testing.T) {
 		t.Errorf("spending %d, tally %d", total.Minor(), w.spendGross)
 	}
 }
+
+func TestOldStatementWithoutALinkedDebitIsPresumedPaid(t *testing.T) {
+	w := newWorld(t)
+	tx := w.add(w.cal, "2026-01-02", -5000, "SHOP", "")
+	w.add(w.cal, "2026-04-02", -300, "RECENT", "") // not on a statement yet
+	if _, err := w.st.ExecContext(ctx, `INSERT INTO statements (id, account_id, bill_date, printed_total_minor) VALUES ('s1', ?, '2026-01-10', 5000)`, w.cal.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.st.ExecContext(ctx, `UPDATE transactions SET statement_id = 's1' WHERE id = ?`, tx.ID); err != nil {
+		t.Fatal(err)
+	}
+	pts, err := w.s.NetWorth(ctx, Filter{From: "2026-02-01", To: "2026-04-15"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, p := range pts {
+		got[p.Date] = p.Liabilities.Minor()
+	}
+	if got["2026-02-28"] != 5000 {
+		t.Errorf("a recent unlinked statement is owed: %v", got)
+	}
+	if got["2026-04-15"] != 300 {
+		t.Errorf("an old unlinked statement is presumed paid, a newer charge is owed: %v", got)
+	}
+}

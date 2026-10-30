@@ -22,12 +22,15 @@ type Service struct {
 	// Tolerance is how far (in minor units) a settled amount may fall short of the expected total
 	// and still count as paid.
 	Tolerance int64
+	// MaxTolerance caps the tolerance for a large statement, which may fall short by up to 0.5% of its total
+	// (a bank sometimes debits a few shekels less than the card statement says).
+	MaxTolerance int64
 	// MaxMatchDays is how far a bank debit may be from a statement's bill date to be proposed.
 	MaxMatchDays int
 }
 
 func New(st *store.Store, l *ledger.Ledger) *Service {
-	return &Service{st: st, l: l, Now: time.Now, Tolerance: 100, MaxMatchDays: 5}
+	return &Service{st: st, l: l, Now: time.Now, Tolerance: 100, MaxTolerance: 1000, MaxMatchDays: 5}
 }
 
 func (s *Service) today() string { return s.Now().Format(dateLayout) }
@@ -270,7 +273,7 @@ func (s *Service) Statements(ctx context.Context, f StatementFilter) ([]Statemen
 	today := s.today()
 	var out []Statement
 	for _, st := range all {
-		st.Status = statusOf(st.BillDate, st.Expected.Minor(), st.Settled.Minor(), today, s.Tolerance)
+		st.Status = statusOf(st.BillDate, st.Expected.Minor(), st.Settled.Minor(), today, s.tolerance(st.Expected.Minor()))
 		if f.matches(st) {
 			out = append(out, st)
 		}
@@ -391,4 +394,11 @@ func linkUnlinked(ctx context.Context, tx *sql.Tx, statementID string) error {
 		  AND account_id = (SELECT account_id FROM statements WHERE id = ?1)
 		  AND bill_date = (SELECT bill_date FROM statements WHERE id = ?1)`, statementID)
 	return err
+}
+
+// tolerance is how far a debit may differ from an expected total and still count as paying it in full: the
+// base tolerance, or 0.5% of the total for a large statement, up to MaxTolerance.
+func (s *Service) tolerance(expected int64) int64 {
+	t := min(expected/200, s.MaxTolerance)
+	return max(t, s.Tolerance)
 }

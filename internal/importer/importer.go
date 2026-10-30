@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/liorokman/finrep/internal/ledger"
@@ -67,6 +68,43 @@ func (im *Importer) prepare(ctx context.Context, accountID string, p *Parsed) (*
 	return pr, nil
 }
 
+// trailingNumber matches a stray number a statement can append to a merchant name (a column that spills over).
+var trailingNumber = regexp.MustCompile(`\s+\d{1,2}$`)
+
+func payeeCore(s string) string {
+	return strings.TrimSpace(trailingNumber.ReplaceAllString(strings.TrimSpace(s), ""))
+}
+
+// nearDuplicate returns the id of a line already imported from another batch that is the same charge as l: the
+// same card, date, amount, bill date and kind, with a merchant that differs only by a trailing number. A card
+// lists a deferred charge once as information and again when it falls due, and the second listing can spell
+// the merchant slightly differently, which a key alone would count as a new charge.
+func nearDuplicate(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, accountID string, l Line, key, batchID string) (string, error) {
+	if l.BillDate == "" || l.Kind != ledger.KindPurchase {
+		return "", nil
+	}
+	rows, err := q.QueryContext(ctx, `SELECT id, payee_raw FROM transactions
+		WHERE account_id = ? AND date = ? AND amount_minor = ? AND bill_date = ? AND kind = ? AND import_key <> ?
+		  AND COALESCE(batch_id, '') <> ? AND payee_raw <> ?`,
+		accountID, l.Date, l.Amount.Minor(), l.BillDate, string(l.Kind), key, batchID, l.Payee)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, payee string
+		if err := rows.Scan(&id, &payee); err != nil {
+			return "", err
+		}
+		if payeeCore(payee) == payeeCore(l.Payee) {
+			return id, nil
+		}
+	}
+	return "", rows.Err()
+}
+
 func (pr *prepared) isSkipped(i int) bool {
 	for _, s := range pr.skipped {
 		if s.Line == i+1 {
@@ -90,6 +128,13 @@ func (im *Importer) Preview(ctx context.Context, accountID string, p *Parsed) (*
 		var n int
 		if err := im.st.QueryRowContext(ctx, `SELECT COUNT(*) FROM transactions WHERE import_key = ?`, pr.keys[i]).Scan(&n); err != nil {
 			return nil, err
+		}
+		if n == 0 {
+			if id, err := nearDuplicate(ctx, im.st, accountID, p.Lines[i], pr.keys[i], ""); err != nil {
+				return nil, err
+			} else if id != "" {
+				n = 1
+			}
 		}
 		if n > 0 {
 			out.Duplicates++
@@ -159,6 +204,13 @@ func (im *Importer) Commit(ctx context.Context, accountID string, p *Parsed) (*R
 				}
 				covered := ids[*l.Covers]
 				t.CoversID = &covered
+			}
+			if id, err := nearDuplicate(ctx, tx, accountID, l, pr.keys[i], res.BatchID); err != nil {
+				return err
+			} else if id != "" {
+				ids[i] = id
+				res.Duplicates++
+				return nil
 			}
 			err := im.l.InsertTransactionTx(ctx, tx, t)
 			switch {

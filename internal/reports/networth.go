@@ -2,6 +2,7 @@ package reports
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/liorokman/finrep/internal/money"
@@ -11,9 +12,13 @@ import (
 type NetWorthPoint struct {
 	Date        string
 	Assets      money.Money // bank balances
-	Liabilities money.Money // card charges not yet settled by a bank debit, billed or not
+	Liabilities money.Money // card charges not yet settled by a bank debit, billed or not (see StalePresumedPaid)
 	NetWorth    money.Money
 }
+
+// StalePresumedPaid is how many days after its bill date a statement that no bank debit was linked to stops
+// counting as owed: the bank was almost certainly debited and the link is missing, not the money.
+const StalePresumedPaid = 60
 
 // NetWorth returns the position at each month end in the range (and at the end date itself when it
 // falls mid-month). Assets are the accounts' opening balances plus their movements; liabilities are
@@ -76,8 +81,21 @@ func (s *Service) NetWorth(ctx context.Context, f Filter) ([]NetWorthPoint, erro
 		if err != nil {
 			return nil, err
 		}
+		// What is left over on statements billed long ago (their debit was never linked) is presumed paid.
+		var stale int64
+		if err := s.st.QueryRowContext(ctx, `SELECT COALESCE(SUM(l.lines - COALESCE(p.paid, 0)), 0)
+			FROM (SELECT st.id, st.account_id, -SUM(t.amount_minor) AS lines FROM statements st
+			      JOIN transactions t ON t.statement_id = st.id
+			      WHERE st.bill_date <= date(?, '-`+strconv.Itoa(StalePresumedPaid)+` days') AND t.date <= ?
+			      GROUP BY st.id) l
+			JOIN accounts a ON a.id = l.account_id
+			LEFT JOIN (SELECT x.statement_id AS sid, SUM(x.amount_minor) AS paid FROM settlements x
+			           JOIN transactions b ON b.id = x.bank_transaction_id WHERE b.date <= ? GROUP BY x.statement_id) p ON p.sid = l.id
+			WHERE 1 = 1`+acct, append([]any{d, d, d}, args...)...).Scan(&stale); err != nil {
+			return nil, err
+		}
 		assets := bankOpen + bankMoves
-		liab := -(cardOpen + cardMoves) - paid
+		liab := -(cardOpen + cardMoves) - paid - stale
 		out = append(out, NetWorthPoint{Date: d, Assets: money.New(assets, f.currency()),
 			Liabilities: money.New(liab, f.currency()), NetWorth: money.New(assets-liab, f.currency())})
 	}

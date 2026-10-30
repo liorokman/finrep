@@ -149,7 +149,7 @@ func (s *Service) Proposals(ctx context.Context) ([]Proposal, error) {
 			if diff < 0 {
 				diff = -diff
 			}
-			exact := diff <= s.Tolerance
+			exact := diff <= s.tolerance(st.Expected.Minor())
 			if gap > s.MaxMatchDays || !(exact || d.hinted) {
 				continue
 			}

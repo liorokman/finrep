@@ -108,6 +108,7 @@ func parseCalRows(rows []pdfRow, filename string, opt PDFOptions) (*Parsed, erro
 	if len(p.Statements) == 0 {
 		return nil, fmt.Errorf("%s: no statement total found (expected 'סה\"כ לתאריך'); unsupported layout", filename)
 	}
+	ShiftSaturdayBillDates(p)
 	PairCoverage(p)
 	return p, nil
 }

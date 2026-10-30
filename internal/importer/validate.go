@@ -3,6 +3,7 @@ package importer
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/liorokman/finrep/internal/ledger"
 	"github.com/liorokman/finrep/internal/money"
@@ -81,6 +82,26 @@ func PairCoverage(p *Parsed) {
 		if c.Covers == nil {
 			p.Warnings = append(p.Warnings, fmt.Sprintf("employer coverage %s on %s (%s) could not be paired with a purchase",
 				c.Amount, c.Date, c.Payee))
+		}
+	}
+}
+
+// ShiftSaturdayBillDates moves a bill date that falls on a Saturday to the Sunday. A statement lists the charges
+// of coming months with the nominal bill date (the 10th), while the issuer bills on the Sunday after a Saturday,
+// so without this the same charge would carry two different bill dates, one per statement that lists it. Dates
+// that a statement prints as its own are left alone.
+func ShiftSaturdayBillDates(p *Parsed) {
+	own := map[string]bool{}
+	for _, s := range p.Statements {
+		own[s.BillDate] = true
+	}
+	for i := range p.Lines {
+		bd := p.Lines[i].BillDate
+		if bd == "" || own[bd] {
+			continue
+		}
+		if t, err := time.Parse("2006-01-02", bd); err == nil && t.Weekday() == time.Saturday {
+			p.Lines[i].BillDate = t.AddDate(0, 0, 1).Format("2006-01-02")
 		}
 	}
 }
