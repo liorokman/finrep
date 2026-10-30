@@ -290,6 +290,7 @@ type categoryReq struct {
 	Icon               string              `json:"icon"`
 	Type               ledger.CategoryType `json:"type"`
 	MonthlyBudgetMinor *int64              `json:"monthly_budget_minor"`
+	Description        string              `json:"description"`
 }
 
 func (s *Server) listCategories(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +319,7 @@ func (s *Server) createCategory(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	c := &ledger.Category{NameHE: in.NameHE, NameEN: in.NameEN, ParentID: in.ParentID, ColorHex: in.ColorHex, Icon: in.Icon, Type: in.Type, CreatedBy: ledger.ByUser}
+	c := &ledger.Category{NameHE: in.NameHE, NameEN: in.NameEN, ParentID: in.ParentID, ColorHex: in.ColorHex, Icon: in.Icon, Type: in.Type, Description: in.Description, CreatedBy: ledger.ByUser}
 	if in.MonthlyBudgetMinor != nil {
 		m := money.New(*in.MonthlyBudgetMinor, money.ILS)
 		c.MonthlyBudget = &m
@@ -345,6 +346,7 @@ type categoryPatch struct {
 	Type               *ledger.CategoryType `json:"type"`
 	MonthlyBudgetMinor *int64               `json:"monthly_budget_minor"`
 	ClearBudget        bool                 `json:"clear_budget"`
+	Description        *string              `json:"description"`
 	Keep               bool                 `json:"keep"` // accept a model-created category as your own
 }
 
@@ -370,6 +372,9 @@ func (s *Server) updateCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Icon != nil {
 		c.Icon = *in.Icon
+	}
+	if in.Description != nil {
+		c.Description = *in.Description
 	}
 	if in.Type != nil {
 		c.Type = *in.Type

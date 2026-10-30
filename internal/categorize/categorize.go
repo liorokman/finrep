@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -267,7 +268,7 @@ func (s *worker) execute(ctx context.Context, runID string, groups []*group) {
 		}
 	}
 	s.inheritCoverage(runID)
-	s.exec(`UPDATE categorization_runs SET status = ?, error = NULLIF(?, ''), finished_at = CURRENT_TIMESTAMP WHERE id = ?`, status, runErr, runID)
+	s.exec(`UPDATE categorization_runs SET status = ?, error = COALESCE(NULLIF(?, ''), error), finished_at = CURRENT_TIMESTAMP WHERE id = ?`, status, runErr, runID)
 }
 
 // exec runs bookkeeping statements that must not be skipped because the run was canceled.
@@ -294,6 +295,8 @@ type catView struct {
 	EN   string `json:"name_en"`
 	HE   string `json:"name_he"`
 	Type string `json:"type"`
+	// Description says what belongs in the category; empty ones are left out of the request.
+	Description string `json:"description,omitempty"`
 }
 
 type itemView struct {
@@ -409,6 +412,9 @@ func (s *worker) decide(ctx context.Context, groups []*group, cats []catView) ([
 		if c.HE != "" && c.HE != c.EN {
 			desc += " (" + c.HE + ")"
 		}
+		if c.Description != "" {
+			desc += ": " + c.Description
+		}
 		criteria[key], byKey[key] = desc, c.ID
 	}
 	var out []classification
@@ -451,7 +457,7 @@ func (s *worker) batch(ctx context.Context, runID string, groups []*group) (int,
 	views := make([]catView, 0, len(cats))
 	for _, c := range cats {
 		known[c.ID] = true
-		views = append(views, catView{c.ID, c.NameEN, c.NameHE, string(c.Type)})
+		views = append(views, catView{c.ID, c.NameEN, c.NameHE, string(c.Type), c.Description})
 	}
 	items := func(gs []*group, ids []int) []itemView {
 		out := make([]itemView, len(ids))
@@ -517,7 +523,13 @@ func (s *worker) batch(ctx context.Context, runID string, groups []*group) (int,
 			Results []generation `json:"results"`
 		}
 		if err := s.ask(ctx, s.o.Generator, s.o.GeneratorModel, generatorSystem, prompt{views, items(groups, rest)}, &gen); err != nil {
-			return 0, err
+			if ctx.Err() != nil {
+				return 0, err
+			}
+			// Keep what the classifier was sure about; the rest stays uncategorized for a later run.
+			slog.Warn("category generator unavailable; leaving the unresolved payees uncategorized", "error", err)
+			s.exec(`UPDATE categorization_runs SET error = ? WHERE id = ?`, "category generator unavailable: "+err.Error(), runID)
+			gen.Results = nil
 		}
 		created := map[string]string{} // lowercased English name -> id, within this batch
 		for _, r := range gen.Results {

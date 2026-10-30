@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/liorokman/finrep/internal/money"
@@ -411,5 +412,30 @@ func TestMergeAndDeleteCategory(t *testing.T) {
 	}
 	if err := l.DeleteCategory(ctx, to.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+func TestCategoryDescription(t *testing.T) {
+	l := newLedger(t)
+	c := &Category{NameEN: "Restaurants", NameHE: "מסעדות", Type: Expense, Description: "  Wolt, Ten Bis, Aroma  "}
+	if err := l.CreateCategory(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := l.GetCategory(ctx, c.ID)
+	if got.Description != "Wolt, Ten Bis, Aroma" {
+		t.Fatalf("%q", got.Description)
+	}
+	got.Description = "Delivery too"
+	if err := l.UpdateCategory(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := l.GetCategory(ctx, c.ID); again.Description != "Delivery too" {
+		t.Fatalf("%q", again.Description)
+	}
+	long := &Category{NameEN: "Long", Type: Expense, Description: strings.Repeat("ש", MaxDescription+1)}
+	wantInvalid(t, l.CreateCategory(ctx, long))
+	ok := &Category{NameEN: "Exactly", Type: Expense, Description: strings.Repeat("ש", MaxDescription)}
+	if err := l.CreateCategory(ctx, ok); err != nil {
+		t.Fatalf("the limit counts characters, not bytes: %v", err)
 	}
 }

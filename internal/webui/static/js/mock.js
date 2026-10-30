@@ -25,6 +25,7 @@ const ACC = [
   { id: 'acc_isra', name: 'Isracard 1002', type: 'CREDIT_CARD', institution: 'Isracard', owner: 'Alice', last4: '1002', currency: 'ILS', billing_rules: rules([ISRA_FOREIGN]) },
   { id: 'acc_lcard', name: 'Leumi Card 1003', type: 'CREDIT_CARD', institution: 'Leumi', owner: 'Alice', last4: '1003', currency: 'ILS', billing_rules: rules() },
 ];
+const DESC = { groc: 'Shufersal, Rami Levy, Yochananof, Mega, AM:PM, greengrocers', rest: 'Wolt, Ten Bis, Aroma, McDonald’s, Pizza Hut, Burger Saloon', fuel: 'Paz, Sonol, Delek, Dor Alon', tele: 'Pelephone, Partner, Cellcom, Hot, Bezeq', subs: 'Netflix, Spotify, Apple, Google, YouTube', pharm: 'Super-Pharm, New-Pharm' };
 const CATS = [
   ['groc', 'Groceries', 'סופרמרקט ומכולת', 'EXPENSE'], ['rest', 'Restaurants', 'מסעדות', 'EXPENSE'], ['cafe', 'Coffee & Cafes', 'קפה ובתי קפה', 'EXPENSE'],
   ['fuel', 'Fuel', 'דלק', 'EXPENSE'], ['trans', 'Public Transport', 'תחבורה ציבורית', 'EXPENSE'], ['park', 'Parking & Tolls', 'חניה וכבישי אגרה', 'EXPENSE'],
@@ -34,7 +35,7 @@ const CATS = [
   ['fun', 'Entertainment', 'בילוי ופנאי', 'EXPENSE'], ['travel', 'Travel & Vacation', 'נסיעות וחופשות', 'EXPENSE'], ['wife', "Wife's Cards", 'כרטיסי אשראי של בת הזוג', 'EXPENSE'],
   ['vet', 'Veterinary', 'וטרינר', 'EXPENSE', 'LLM'], ['salary', 'Salary', 'משכורת', 'INCOME'], ['refund', 'Refunds', 'החזרים', 'INCOME'],
   ['ccpay', 'Credit Card Payment', 'חיוב כרטיס אשראי', 'TRANSFER'], ['save', 'Savings & Investments', 'חיסכון והשקעות', 'TRANSFER'],
-].map(([k, en, he, type, by], i) => ({ id: 'cat_' + k, name_en: en, name_he: he, parent_id: null, color_hex: PAL[i % 8], icon: 'tag', type, monthly_budget: k === 'groc' ? M(280000) : k === 'rest' ? M(120000) : null, created_by: by || 'USER' }));
+].map(([k, en, he, type, by], i) => ({ id: 'cat_' + k, name_en: en, name_he: he, parent_id: null, color_hex: PAL[i % 8], icon: 'tag', type, monthly_budget: k === 'groc' ? M(280000) : k === 'rest' ? M(120000) : null, description: DESC[k] || '', created_by: by || 'USER' }));
 const catBy = Object.fromEntries(CATS.map((c) => [c.id.slice(4), c]));
 
 // ---- billing rule (same logic as the server) ----
@@ -260,14 +261,14 @@ export async function mockRequest(method, path, { params = {}, body } = {}) {
   if (path === '/api/v1/categories' && method === 'GET') return { items: CATS.filter((c) => !params.created_by || c.created_by === params.created_by) };
   if (path === '/api/v1/categories' && method === 'POST') {
     if (CATS.some((c) => c.name_en.toLowerCase() === (body.name_en || '').toLowerCase())) throw new MockError(409, 'already exists');
-    const c = { id: id('cat'), name_en: body.name_en, name_he: body.name_he || body.name_en, parent_id: null, color_hex: PAL[CATS.length % 8], icon: 'tag', type: body.type, monthly_budget: body.monthly_budget_minor ? M(body.monthly_budget_minor) : null, created_by: 'USER' };
+    const c = { id: id('cat'), name_en: body.name_en, name_he: body.name_he || body.name_en, parent_id: null, color_hex: PAL[CATS.length % 8], icon: 'tag', type: body.type, monthly_budget: body.monthly_budget_minor ? M(body.monthly_budget_minor) : null, description: body.description || '', created_by: 'USER' };
     CATS.push(c); return c;
   }
   if ((m = path.match(/^\/api\/v1\/categories\/([^/]+)(\/merge)?$/))) {
     const i = CATS.findIndex((c) => c.id === m[1]); if (i < 0) throw new MockError(404, 'not found');
     if (m[2]) { const to = CATS.find((c) => c.id === body.into); TX.forEach((t) => { if (t.category_id === m[1]) Object.assign(t, { category_id: to.id, category_name_en: to.name_en, category_name_he: to.name_he }); }); CATS.splice(i, 1); return null; }
     if (method === 'DELETE') { TX.forEach((t) => { if (t.category_id === m[1]) Object.assign(t, { category_id: null, category_name_en: '', category_name_he: '', categorized_by: 'UNSET' }); }); CATS.splice(i, 1); return null; }
-    const c = CATS[i]; for (const k of ['name_en', 'name_he', 'type']) if (body[k]) c[k] = body[k];
+    const c = CATS[i]; for (const k of ['name_en', 'name_he', 'type', 'description']) if (body[k] != null) c[k] = body[k];
     if (body.monthly_budget_minor != null) c.monthly_budget = M(body.monthly_budget_minor); if (body.clear_budget) c.monthly_budget = null; if (body.keep) c.created_by = 'USER';
     return c;
   }

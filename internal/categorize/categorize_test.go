@@ -732,3 +732,106 @@ func TestDecisionModelRetriesThenFails(t *testing.T) {
 		t.Fatal("a failed run must leave transactions untouched")
 	}
 }
+
+func TestGeneratorOutageKeepsTheConfidentPicks(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	sure := e.tx("2024-03-01", -1000, "SURE")
+	unsure := e.tx("2024-03-02", -1000, "UNSURE")
+	d := &fakeDecider{pick: func(state string) (string, float64) {
+		if strings.Contains(state, "UNSURE") {
+			return "Food", 0.4
+		}
+		return "Food", 0.95
+	}}
+	down := &fake{fn: func(int, prompt) (string, error) { return "", errors.New("generator is down") }}
+	r := e.run(e.svc(nil, down, func(o *Options) { o.Decider = d }))
+	if r.Status != "DONE" || !strings.Contains(r.Error, "generator") {
+		t.Fatalf("the run should finish and say what failed: %+v", r)
+	}
+	if got := e.get(sure.ID); got.CategoryID == nil || *got.CategoryID != food.ID {
+		t.Fatalf("the confident pick was lost: %+v", got)
+	}
+	if got := e.get(unsure.ID); got.CategoryID != nil || got.CategorizedBy != ledger.ByUnset {
+		t.Fatalf("an unresolved payee must stay uncategorized: %+v", got)
+	}
+	// A later run, with the generator back, finishes the job.
+	up := generate(func(string) (string, string, string) { return "Snacks", "חטיפים", "EXPENSE" })
+	if r2 := e.run(e.svc(nil, up, func(o *Options) { o.Decider = d })); r2.Status != "DONE" || e.get(unsure.ID).CategoryID == nil {
+		t.Fatalf("%+v", r2)
+	}
+}
+
+func TestTheModelReceivesCategoryDescriptions(t *testing.T) {
+	e := newEnv(t)
+	c := &ledger.Category{NameEN: "Restaurants", NameHE: "מסעדות", Type: ledger.Expense, Description: "Wolt, Ten Bis, Aroma"}
+	if err := e.l.CreateCategory(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	e.cat("Fuel", ledger.Expense)
+	e.tx("2024-03-01", -1000, "WOLT")
+	d := &fakeDecider{pick: func(string) (string, float64) { return "Restaurants", 0.9 }}
+	e.run(e.svc(nil, nil, func(o *Options) { o.Decider = d }))
+	var with, without bool
+	for _, desc := range d.criteria {
+		with = with || desc == "Restaurants (מסעדות): Wolt, Ten Bis, Aroma"
+		without = without || desc == "Fuel (Fuel-he)"
+	}
+	if !with || !without {
+		t.Fatalf("a described category carries its description, an undescribed one does not add a colon: %v", d.criteria)
+	}
+	// The chat path sees it too, and leaves the field out when empty.
+	var prompts []string
+	cl := &fake{fn: func(_ int, p prompt) (string, error) {
+		b, _ := json.Marshal(p.Categories)
+		prompts = append(prompts, string(b))
+		return `{"results":[]}`, nil
+	}}
+	e.tx("2024-03-02", -1000, "OTHER")
+	e.run(e.svc(cl, generate(func(string) (string, string, string) { return "X", "X", "EXPENSE" })))
+	if len(prompts) == 0 || !strings.Contains(prompts[0], `"description":"Wolt, Ten Bis, Aroma"`) || strings.Count(prompts[0], "description") != 1 {
+		t.Fatalf("%v", prompts)
+	}
+}
+
+func TestFillDescriptionsOnceAndNeverOverwrites(t *testing.T) {
+	e := newEnv(t)
+	if _, err := Seed(ctx, e.l); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := e.l.FindCategoryByName(ctx, "Groceries"); !strings.Contains(g.Description, "Shufersal") {
+		t.Fatalf("a freshly seeded category already carries its description: %q", g.Description)
+	}
+	// An older database was seeded before descriptions existed.
+	if _, err := e.st.ExecContext(ctx, `UPDATE categories SET description = ''`); err != nil {
+		t.Fatal(err)
+	}
+	mine := &ledger.Category{NameEN: "Mine", Type: ledger.Expense}
+	groc, _ := e.l.FindCategoryByName(ctx, "Groceries")
+	groc.Description = "my own words"
+	if err := e.l.UpdateCategory(ctx, groc); err != nil {
+		t.Fatal(err)
+	}
+	e.l.CreateCategory(ctx, mine)
+	n, err := FillDescriptions(ctx, e.st, e.l)
+	if err != nil || n < 30 {
+		t.Fatalf("filled %d, %v", n, err)
+	}
+	g, _ := e.l.FindCategoryByName(ctx, "Groceries")
+	if g.Description != "my own words" {
+		t.Fatalf("overwrote the user's text: %q", g.Description)
+	}
+	if r, _ := e.l.FindCategoryByName(ctx, "Restaurants"); !strings.Contains(r.Description, "Wolt") {
+		t.Fatalf("%q", r.Description)
+	}
+	if m, _ := e.l.FindCategoryByName(ctx, "Mine"); m.Description != "" {
+		t.Fatal("a custom category must not get a description")
+	}
+	// Cleared by the user, it stays cleared: the fill runs only once.
+	r, _ := e.l.FindCategoryByName(ctx, "Restaurants")
+	r.Description = ""
+	e.l.UpdateCategory(ctx, r)
+	if n, _ := FillDescriptions(ctx, e.st, e.l); n != 0 {
+		t.Fatalf("second run filled %d", n)
+	}
+}

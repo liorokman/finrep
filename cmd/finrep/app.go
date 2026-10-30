@@ -82,6 +82,11 @@ func build(ctx context.Context, cfg *conf.Config, st *store.Store) (*app, error)
 	} else if n > 0 {
 		slog.Info("seeded starter categories", "count", n)
 	}
+	if n, err := categorize.FillDescriptions(ctx, st, led); err != nil {
+		return nil, fmt.Errorf("describe starter categories: %w", err)
+	} else if n > 0 {
+		slog.Info("added descriptions to starter categories", "count", n)
+	}
 	bill := billing.New(st, led)
 	cat := categorize.New(st, led, categorize.Options{})
 	if err := cat.Recover(ctx); err != nil {

@@ -223,6 +223,14 @@ func TestCategoriesEndpoints(t *testing.T) {
 	}
 	g.call("POST", "/api/v1/categories", map[string]any{"name_en": "food", "type": "EXPENSE"}).want(409)
 	g.call("POST", "/api/v1/categories", map[string]any{"name_en": "Bad", "type": "NOPE"}).want(400)
+	d := g.call("POST", "/api/v1/categories", map[string]any{"name_en": "Dining", "type": "EXPENSE", "description": "Wolt, Ten Bis"}).want(201).json()
+	if d["description"] != "Wolt, Ten Bis" {
+		t.Fatalf("%v", d)
+	}
+	if p := g.call("PATCH", "/api/v1/categories/"+d["id"].(string), map[string]any{"description": "Delivery apps"}).want(200).json(); p["description"] != "Delivery apps" {
+		t.Fatalf("%v", p)
+	}
+	g.call("PATCH", "/api/v1/categories/"+d["id"].(string), map[string]any{"description": strings.Repeat("x", 401)}).want(400)
 	g.call("PATCH", "/api/v1/categories/"+a["id"].(string), map[string]any{"parent_id": b["id"]}).want(400) // cycle
 	p := g.call("PATCH", "/api/v1/categories/"+b["id"].(string), map[string]any{"clear_parent": true, "name_en": "Supermarket"}).want(200).json()
 	if p["parent_id"] != nil || p["name_en"] != "Supermarket" {

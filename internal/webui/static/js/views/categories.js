@@ -15,11 +15,11 @@ async function reload() {
 
 function editor(cat) {
   let d; const isNew = !cat;
-  const v = { name_en: cat?.name_en || '', name_he: cat?.name_he || '', type: cat?.type || 'EXPENSE', budget: cat?.monthly_budget ? String(cat.monthly_budget.minor / 100) : '' };
+  const v = { name_en: cat?.name_en || '', name_he: cat?.name_he || '', type: cat?.type || 'EXPENSE', budget: cat?.monthly_budget ? String(cat.monthly_budget.minor / 100) : '', description: cat?.description || '' };
   const field = (label, key, extra) => h('div', { class: 'field' }, h('label', null, label), h('input', { class: 'input', value: v[key], oninput: (e) => { v[key] = e.target.value; }, ...extra }));
   const body = h('form', { class: 'stack', onsubmit: async (e) => {
     e.preventDefault();
-    const payload = { name_en: v.name_en.trim(), name_he: v.name_he.trim(), type: v.type };
+    const payload = { name_en: v.name_en.trim(), name_he: v.name_he.trim(), type: v.type, description: v.description.trim() };
     const b = v.budget.trim() === '' ? null : Math.round(parseFloat(v.budget) * 100);
     if (b != null && !(b >= 0)) return toast('The budget must be a positive number');
     try {
@@ -30,6 +30,8 @@ function editor(cat) {
   } },
     field('Name (English)', 'name_en', { required: true, autocomplete: 'off' }), field('Name (עברית)', 'name_he', { dir: 'auto', lang: 'he', autocomplete: 'off' }),
     selectField('Counts as', TYPES, v.type, (t) => { v.type = t; }), field('Monthly budget (₪)', 'budget', { inputmode: 'decimal', placeholder: 'No budget' }),
+    h('div', { class: 'field' }, h('label', null, 'What belongs here'), h('textarea', { class: 'input', rows: 3, dir: 'auto', maxlength: 400, placeholder: 'e.g. Wolt, Ten Bis, Aroma, McDonald’s. Naming merchants is the best way to help the model.', style: { minHeight: '84px', resize: 'vertical' }, oninput: (e) => { v.description = e.target.value; } }, v.description),
+      h('span', { class: 'muted xs' }, 'The model reads this when it picks a category. Hebrew is fine.')),
     h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, isNew ? 'Add category' : 'Save')));
   d = drawer(isNew ? 'New category' : 'Edit category', body);
 }
@@ -49,7 +51,7 @@ async function remove(cat) {
 }
 
 const row = (c, { review } = {}) => h('tr', null,
-  h('td', null, h('div', { class: 'row', style: { gap: '9px' } }, h('i', { class: 'dot', style: { '--c': c.color_hex, width: '10px', height: '10px', borderRadius: '50%', background: 'var(--c)', flex: 'none' } }), utBlock(c.name_en, 'strong'))),
+  h('td', null, h('div', { class: 'row', style: { gap: '9px' } }, h('i', { class: 'dot', style: { '--c': c.color_hex, width: '10px', height: '10px', borderRadius: '50%', background: 'var(--c)', flex: 'none' } }), h('span', { style: { minWidth: 0 } }, utBlock(c.name_en, 'strong'), c.description && utBlock(c.description, 'sub muted xs')))),
   h('td', null, utBlock(c.name_he)), h('td', { class: 'muted small' }, TYPE_LABEL[c.type]),
   h('td', { class: 'num' }, c.monthly_budget ? h('span', { class: 'amount' }, money(c.monthly_budget, { whole: true })) : h('span', { class: 'muted' }, '–')),
   h('td', { class: 'num' }, h('div', { class: 'row', style: { justifyContent: 'flex-end', gap: '2px' } },

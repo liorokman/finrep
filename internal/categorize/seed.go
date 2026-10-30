@@ -58,6 +58,75 @@ var seedCategories = []seedCat{
 	{"Savings & Investments", "חיסכון והשקעות", ledger.Transfer},
 }
 
+// seedDescriptions name typical Israeli merchants and the kinds of charge in each category. A decision
+// model has no other way to know that Wolt is a restaurant delivery service or that Pango is parking.
+var seedDescriptions = map[string]string{
+	"Groceries":             "Supermarkets and grocery shops: Shufersal, Rami Levy, Yochananof, Mega, Victory, AM:PM, Tiv Taam, greengrocers, bakeries",
+	"Restaurants":           "Restaurants, takeaway and food delivery: Wolt, Ten Bis, Aroma, McDonald's, Pizza Hut, Burger Saloon, cafes with food",
+	"Coffee & Cafes":        "Coffee shops and ice cream: Cafe Greg, Landwer, Arcaffe, Golda, Aroma coffee",
+	"Fuel":                  "Petrol stations: Paz, Sonol, Delek, Dor Alon, Ten, electric car charging",
+	"Public Transport":      "Buses, trains and light rail: Rav-Kav top-ups, Israel Railways, Egged, Dan, Metropoline",
+	"Taxi & Rideshare":      "Taxis and rides: Gett, Yango, Uber, Bolt",
+	"Parking & Tolls":       "Parking and toll roads: Pango, Cellopark, Highway 6, Carmel Tunnels, parking lots",
+	"Car":                   "Car costs other than fuel: garage, test, insurance, tyres, car wash, licence",
+	"Rent & Mortgage":       "Rent paid to a landlord and mortgage payments",
+	"Municipal Tax":         "Arnona, the city council property tax",
+	"Electricity & Water":   "Israel Electric Corporation, water corporations, gas bills",
+	"Home & Garden":         "Furniture and home goods: IKEA, ACE, Tambour, plumbers, repairs, gardening",
+	"Telecom & Internet":    "Phone and internet providers: Pelephone, Partner, Cellcom, Hot, Bezeq, 012, Yes",
+	"Subscriptions":         "Recurring digital services: Netflix, Spotify, Apple, Google, YouTube, Disney, software, cloud storage",
+	"Health":                "Doctors, dentists, therapy and health funds: Maccabi, Clalit, Meuhedet, Leumit, opticians",
+	"Pharmacy":              "Pharmacies and drugstores: Super-Pharm, New-Pharm, Be",
+	"Insurance":             "Life, health, apartment and travel insurance premiums",
+	"Education":             "Tuition, courses, school and kindergarten fees, books for study",
+	"Kids":                  "Children's costs: toys, clothes, activities, babysitters",
+	"Clothing & Shoes":      "Clothes and shoes: Zara, H&M, Castro, Fox, Renuar, Golf, Nike, Foot Locker",
+	"Electronics":           "Computers, phones and gadgets: KSP, Ivory, Bug, iDigital, Apple Store",
+	"Entertainment":         "Cinema, shows, games and events: Cinema City, Yes Planet, Habima, Steam, PlayStation, tickets",
+	"Travel & Vacation":     "Flights, hotels and holidays: El Al, Booking.com, Airbnb, Israir, Arkia, car rental abroad",
+	"Gifts & Donations":     "Presents and charity donations",
+	"Personal Care":         "Hairdresser, cosmetics, gym and spa: Super-Pharm beauty, barber, nails",
+	"Pets":                  "Vets, pet food and pet shops: Pet Planet, Pet Plus",
+	"Fees & Interest":       "Bank and card fees, interest and commissions",
+	"Taxes":                 "Income tax, national insurance and other government payments",
+	"Cash Withdrawal":       "ATM cash withdrawals",
+	"Shopping":              "General shopping and online marketplaces: Amazon, AliExpress, Shein, Temu, department stores",
+	"Salary":                "Pay received from an employer",
+	"Refunds":               "Money returned by a shop or provider",
+	"Credit Card Payment":   "Bank debits that pay a credit card bill: Cal, Isracard, Leumi Card, Max",
+	"Account Transfer":      "Money moved between your own accounts",
+	"Savings & Investments": "Deposits to savings, study funds, pension, brokerage",
+}
+
+const descriptionsKey = "category_descriptions_filled"
+
+// FillDescriptions gives the starter categories their merchant descriptions, once. It only fills empty
+// descriptions, so anything you wrote yourself is kept, and it does not run again after you clear one.
+func FillDescriptions(ctx context.Context, st *store.Store, l *ledger.Ledger) (int, error) {
+	var v string
+	if err := st.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, descriptionsKey).Scan(&v); err == nil {
+		return 0, nil
+	}
+	cats, err := l.ListCategories(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for i := range cats {
+		d, ok := seedDescriptions[cats[i].NameEN]
+		if !ok || cats[i].Description != "" {
+			continue
+		}
+		cats[i].Description = d
+		if err := l.UpdateCategory(ctx, &cats[i]); err != nil {
+			return n, err
+		}
+		n++
+	}
+	_, err = st.ExecContext(ctx, `INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')`, descriptionsKey)
+	return n, err
+}
+
 var palette = []string{"#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#14B8A6", "#F97316", "#6366F1", "#84CC16", "#06B6D4", "#A855F7"}
 
 const seededKey = "categories_seeded"
@@ -73,7 +142,7 @@ func Seed(ctx context.Context, l *ledger.Ledger) (int, error) {
 		if !errors.Is(err, ledger.ErrNotFound) {
 			return n, err
 		}
-		c := &ledger.Category{NameEN: s.en, NameHE: s.he, Type: s.typ, ColorHex: palette[i%len(palette)], CreatedBy: ledger.ByUser}
+		c := &ledger.Category{NameEN: s.en, NameHE: s.he, Type: s.typ, ColorHex: palette[i%len(palette)], Description: seedDescriptions[s.en], CreatedBy: ledger.ByUser}
 		if err := l.CreateCategory(ctx, c); err != nil && !errors.Is(err, ledger.ErrDuplicate) {
 			return n, err
 		}

@@ -37,9 +37,13 @@ type Category struct {
 	Icon          string
 	Type          CategoryType
 	MonthlyBudget *money.Money // in ILS
+	Description   string       // what belongs here; shown to the categorization model
 	CreatedBy     Creator
 	CreatedAt     string
 }
+
+// MaxDescription bounds a category description, which is sent to the model with every request.
+const MaxDescription = 400
 
 var hexColor = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
@@ -71,19 +75,23 @@ func (c *Category) normalize() error {
 	if c.CreatedBy != ByUser && c.CreatedBy != ByLLM {
 		return invalid("created_by must be USER or LLM")
 	}
+	c.Description = strings.TrimSpace(c.Description)
+	if len([]rune(c.Description)) > MaxDescription {
+		return invalid("description is longer than %d characters", MaxDescription)
+	}
 	if c.MonthlyBudget != nil && c.MonthlyBudget.IsNegative() {
 		return invalid("monthly budget cannot be negative")
 	}
 	return nil
 }
 
-const categoryCols = `id, name_he, name_en, parent_id, color_hex, icon, category_type, monthly_budget_minor, created_by, created_at`
+const categoryCols = `id, name_he, name_en, parent_id, color_hex, icon, category_type, monthly_budget_minor, description, created_by, created_at`
 
 func scanCategory(r rowScanner) (*Category, error) {
 	var c Category
 	var parent sql.NullString
 	var budget sql.NullInt64
-	if err := r.Scan(&c.ID, &c.NameHE, &c.NameEN, &parent, &c.ColorHex, &c.Icon, &c.Type, &budget, &c.CreatedBy, &c.CreatedAt); err != nil {
+	if err := r.Scan(&c.ID, &c.NameHE, &c.NameEN, &parent, &c.ColorHex, &c.Icon, &c.Type, &budget, &c.Description, &c.CreatedBy, &c.CreatedAt); err != nil {
 		return nil, err
 	}
 	if parent.Valid {
@@ -116,9 +124,9 @@ func (l *Ledger) CreateCategory(ctx context.Context, c *Category) error {
 	}
 	c.ID = store.NewID()
 	_, err := l.st.ExecContext(ctx, `INSERT INTO categories
-		(id, name_he, name_en, parent_id, color_hex, icon, category_type, monthly_budget_minor, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.NameHE, c.NameEN, c.ParentID, c.ColorHex, c.Icon, c.Type, budgetMinor(c), c.CreatedBy)
+		(id, name_he, name_en, parent_id, color_hex, icon, category_type, monthly_budget_minor, description, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.NameHE, c.NameEN, c.ParentID, c.ColorHex, c.Icon, c.Type, budgetMinor(c), c.Description, c.CreatedBy)
 	if isUnique(err) {
 		return ErrDuplicate
 	}
@@ -177,8 +185,8 @@ func (l *Ledger) UpdateCategory(ctx context.Context, c *Category) error {
 		}
 	}
 	_, err := l.st.ExecContext(ctx, `UPDATE categories SET name_he = ?, name_en = ?, parent_id = ?, color_hex = ?,
-		icon = ?, category_type = ?, monthly_budget_minor = ? WHERE id = ?`,
-		c.NameHE, c.NameEN, c.ParentID, c.ColorHex, c.Icon, c.Type, budgetMinor(c), c.ID)
+		icon = ?, category_type = ?, monthly_budget_minor = ?, description = ? WHERE id = ?`,
+		c.NameHE, c.NameEN, c.ParentID, c.ColorHex, c.Icon, c.Type, budgetMinor(c), c.Description, c.ID)
 	if isUnique(err) {
 		return ErrDuplicate
 	}

@@ -55,7 +55,7 @@ func TestMigrateIdempotentAndVersioned(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v int
-	if err := s.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil || v != 3 {
+	if err := s.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil || v != 4 {
 		t.Fatalf("version = %d, %v", v, err)
 	}
 	mustExec(t, s, `INSERT INTO schema_migrations (version, name) VALUES (99, 'future')`)
