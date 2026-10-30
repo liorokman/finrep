@@ -91,7 +91,7 @@ func TestBuildMarksInterruptedRunsFailed(t *testing.T) {
 
 func TestBuildFailsFastOnABadIdentityProvider(t *testing.T) {
 	cfg := &conf.Config{AuthEnabled: true, MaxUploadMB: 10, SessionSecret: []byte(strings.Repeat("s", 32)),
-		OIDCIssuer: "http://127.0.0.1:1", OIDCClientID: "x", OIDCRedirect: "http://localhost/auth/callback"}
+		OIDCIssuer: "http://127.0.0.1:1", OIDCClientID: "x", OIDCRedirect: "http://localhost/auth/callback", OIDCGroup: "FinRep_Users"}
 	if _, _, err := newApp(t, cfg); err == nil || !strings.Contains(err.Error(), "oidc discovery") {
 		t.Fatalf("want a discovery error, got %v", err)
 	}

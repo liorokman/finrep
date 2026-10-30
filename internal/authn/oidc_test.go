@@ -76,7 +76,7 @@ func (p *fakeIdP) token(w http.ResponseWriter, r *http.Request) {
 	}
 	claims := map[string]any{
 		"iss": p.srv.URL, "aud": req.clientID, "sub": "user-1", "email": "alice@example.com", "name": "Alice",
-		"nonce": req.nonce, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+		"groups": []string{"Other", "FinRep_Users"}, "nonce": req.nonce, "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
 	}
 	if p.mutate != nil {
 		p.mutate(claims)
@@ -119,7 +119,7 @@ func newRig(t *testing.T) *rig {
 	idp := newIdP(t)
 	s, _ := NewSessions([]byte(strings.Repeat("k", 32)))
 	rg := &rig{t: t, idp: idp, s: s, cbID: "finrep"}
-	o, err := NewOIDC(ctx, OIDCConfig{Issuer: idp.srv.URL, ClientID: "finrep", RedirectURL: "https://fin.example/auth/callback"}, s)
+	o, err := NewOIDC(ctx, OIDCConfig{Issuer: idp.srv.URL, ClientID: "finrep", RedirectURL: "https://fin.example/auth/callback", RequiredGroup: "FinRep_Users"}, s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +258,31 @@ func TestCallbackRejections(t *testing.T) {
 			fc, q := g.start("/")
 			return g.finish(fc, q, "")
 		}, 403},
+		{"group missing from the token", func(g *rig) *httptest.ResponseRecorder {
+			g.idp.mutate = func(c map[string]any) { delete(c, "groups") }
+			fc, q := g.start("/")
+			return g.finish(fc, q, "")
+		}, 403},
+		{"member of other groups only", func(g *rig) *httptest.ResponseRecorder {
+			g.idp.mutate = func(c map[string]any) { c["groups"] = []string{"Admins", "finrep_users", "FinRep_Users_Old", "FinRep"} }
+			fc, q := g.start("/")
+			return g.finish(fc, q, "")
+		}, 403},
+		{"empty group list", func(g *rig) *httptest.ResponseRecorder {
+			g.idp.mutate = func(c map[string]any) { c["groups"] = []string{} }
+			fc, q := g.start("/")
+			return g.finish(fc, q, "")
+		}, 403},
+		{"groups claim of the wrong type", func(g *rig) *httptest.ResponseRecorder {
+			g.idp.mutate = func(c map[string]any) { c["groups"] = 42 }
+			fc, q := g.start("/")
+			return g.finish(fc, q, "")
+		}, 403},
+		{"group named only in another claim", func(g *rig) *httptest.ResponseRecorder {
+			g.idp.mutate = func(c map[string]any) { delete(c, "groups"); c["roles"] = []string{"FinRep_Users"} }
+			fc, q := g.start("/")
+			return g.finish(fc, q, "")
+		}, 403},
 		{"no id token", func(g *rig) *httptest.ResponseRecorder {
 			g.idp.skipID = true
 			fc, q := g.start("/")
@@ -332,5 +357,40 @@ func TestDiscoveryFailureIsReported(t *testing.T) {
 	s, _ := NewSessions([]byte(strings.Repeat("k", 32)))
 	if _, err := NewOIDC(ctx, OIDCConfig{Issuer: "http://127.0.0.1:1", ClientID: "x", RedirectURL: "http://x/cb"}, s); err == nil {
 		t.Fatal("expected a startup error")
+	}
+}
+
+func TestGroupClaimVariants(t *testing.T) {
+	ok := func(name string, mut func(c map[string]any), claim string) {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t)
+			if claim != "" {
+				s, _ := NewSessions([]byte(strings.Repeat("k", 32)))
+				o, err := NewOIDC(ctx, OIDCConfig{Issuer: g.idp.srv.URL, ClientID: "finrep", RedirectURL: "https://fin.example/auth/callback",
+					RequiredGroup: "FinRep_Users", GroupsClaim: claim}, s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				g.o, g.s = o, s
+			}
+			g.idp.mutate = mut
+			fc, q := g.start("/")
+			if rec := g.finish(fc, q, ""); rec.Code != http.StatusFound || sessionCookie1(rec) == nil {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body)
+			}
+		})
+	}
+	ok("a single string", func(c map[string]any) { c["groups"] = "FinRep_Users" }, "")
+	ok("first of several", func(c map[string]any) { c["groups"] = []string{"FinRep_Users", "x"} }, "")
+	ok("a custom claim", func(c map[string]any) { delete(c, "groups"); c["roles"] = []string{"FinRep_Users"} }, "roles")
+}
+
+func TestRequiredGroupIsMandatory(t *testing.T) {
+	g := newIdP(t)
+	s, _ := NewSessions([]byte(strings.Repeat("k", 32)))
+	for _, group := range []string{"", "   "} {
+		if _, err := NewOIDC(ctx, OIDCConfig{Issuer: g.srv.URL, ClientID: "x", RedirectURL: "http://x/cb", RequiredGroup: group}, s); err == nil {
+			t.Errorf("group %q accepted", group)
+		}
 	}
 }

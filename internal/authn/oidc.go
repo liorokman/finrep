@@ -3,6 +3,7 @@ package authn
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,19 +22,31 @@ type OIDC struct {
 	verifier *oidc.IDTokenVerifier
 	sessions *Sessions
 	trusted  []netip.Prefix
+	group    string
+	claim    string
 }
 
 // Settings for NewOIDC.
 type OIDCConfig struct {
 	Issuer, ClientID, ClientSecret, RedirectURL string
 	Scopes                                      []string
-	TrustedProxies                              []netip.Prefix
-	HTTPClient                                  *http.Client // optional, for tests
+	// RequiredGroup must appear in the ID token's GroupsClaim, or the login is refused. It is required:
+	// being able to authenticate at the provider is not by itself permission to use this application.
+	RequiredGroup  string
+	GroupsClaim    string // default "groups"
+	TrustedProxies []netip.Prefix
+	HTTPClient     *http.Client // optional, for tests
 }
 
 // NewOIDC performs provider discovery. It fails if the provider cannot be reached, so a
 // misconfiguration is noticed at startup.
 func NewOIDC(ctx context.Context, c OIDCConfig, s *Sessions) (*OIDC, error) {
+	if strings.TrimSpace(c.RequiredGroup) == "" {
+		return nil, errors.New("oidc: a required group must be configured")
+	}
+	if c.GroupsClaim == "" {
+		c.GroupsClaim = "groups"
+	}
 	if c.HTTPClient != nil {
 		ctx = oidc.ClientContext(ctx, c.HTTPClient)
 	}
@@ -53,6 +66,8 @@ func NewOIDC(ctx context.Context, c OIDCConfig, s *Sessions) (*OIDC, error) {
 		verifier: p.Verifier(&oidc.Config{ClientID: c.ClientID}),
 		sessions: s,
 		trusted:  c.TrustedProxies,
+		group:    c.RequiredGroup,
+		claim:    c.GroupsClaim,
 	}, nil
 }
 
@@ -167,6 +182,11 @@ func (o *OIDC) Callback(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusForbidden, "the ID token was rejected", err)
 		return
 	}
+	if !o.inGroup(idt) {
+		slog.Warn("login refused: not in the required group", "sub", idt.Subject)
+		fail(http.StatusForbidden, "your account is not allowed to use this application", nil)
+		return
+	}
 	clearFlowCookie(w, req.Secure())
 	if _, err := o.sessions.Issue(w, req.Secure(), User{Subject: idt.Subject, Email: claims.Email, Name: claims.Name}); err != nil {
 		http.Error(w, "login unavailable", http.StatusInternalServerError)
@@ -174,4 +194,31 @@ func (o *OIDC) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("login", "sub", idt.Subject)
 	http.Redirect(w, r, f.Next, http.StatusFound)
+}
+
+// inGroup reports whether the ID token's groups claim contains the required group (exact match).
+// Providers send the claim as a list; a single string is accepted too.
+func (o *OIDC) inGroup(idt *oidc.IDToken) bool {
+	var all map[string]json.RawMessage
+	if err := idt.Claims(&all); err != nil {
+		return false
+	}
+	raw, ok := all[o.claim]
+	if !ok {
+		return false
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		var one string
+		if json.Unmarshal(raw, &one) != nil {
+			return false
+		}
+		list = []string{one}
+	}
+	for _, g := range list {
+		if g == o.group {
+			return true
+		}
+	}
+	return false
 }

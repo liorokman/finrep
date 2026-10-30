@@ -50,6 +50,7 @@ func build(ctx context.Context, cfg *conf.Config, st *store.Store) (*app, error)
 		oidc, err := authn.NewOIDC(ctx, authn.OIDCConfig{
 			Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCSecret,
 			RedirectURL: cfg.OIDCRedirect, TrustedProxies: cfg.TrustedProxy,
+			RequiredGroup: cfg.OIDCGroup, GroupsClaim: cfg.OIDCGroupsClaim,
 		}, sessions)
 		if err != nil {
 			return nil, err

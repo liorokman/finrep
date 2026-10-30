@@ -142,3 +142,23 @@ func TestOIDCClientSecretIsOptionalAndFromFile(t *testing.T) {
 		t.Fatalf("%q %v", c.OIDCSecret, err)
 	}
 }
+
+func TestRequiredGroupDefaultsAndIsMandatory(t *testing.T) {
+	c, err := load(t, map[string]string{"FINREP_SESSION_SECRET": secret32}, authOn...)
+	if err != nil || c.OIDCGroup != "FinRep_Users" || c.OIDCGroupsClaim != "groups" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	c, err = load(t, map[string]string{"FINREP_SESSION_SECRET": secret32, "FINREP_OIDC_REQUIRED_GROUP": "Family", "FINREP_OIDC_GROUPS_CLAIM": "roles"}, authOn...)
+	if err != nil || c.OIDCGroup != "Family" || c.OIDCGroupsClaim != "roles" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	for _, arg := range []string{"--oidc-required-group=", "--oidc-required-group=  ", "--oidc-groups-claim="} {
+		if _, err := load(t, map[string]string{"FINREP_SESSION_SECRET": secret32}, append([]string{arg}, authOn...)...); err == nil {
+			t.Errorf("%s accepted", arg)
+		}
+	}
+	// Open development mode has no login, so no group is needed.
+	if _, err := load(t, nil, "--auth=off"); err != nil {
+		t.Errorf("auth off: %v", err)
+	}
+}

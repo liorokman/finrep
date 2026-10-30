@@ -17,20 +17,22 @@ import (
 
 // Config is the validated runtime configuration.
 type Config struct {
-	Port          int
-	Bind          string // listen address host; defaults depend on AuthEnabled
-	LogLevel      string
-	Mode          string // "web" or "mcp"
-	DBPath        string
-	AuthEnabled   bool
-	OIDCIssuer    string
-	OIDCClientID  string
-	OIDCRedirect  string
-	OIDCSecret    string // optional: public PKCE clients have none
-	SessionSecret []byte
-	MCPToken      string // empty disables the HTTP MCP endpoint
-	MaxUploadMB   int
-	TrustedProxy  []netip.Prefix
+	Port            int
+	Bind            string // listen address host; defaults depend on AuthEnabled
+	LogLevel        string
+	Mode            string // "web" or "mcp"
+	DBPath          string
+	AuthEnabled     bool
+	OIDCIssuer      string
+	OIDCClientID    string
+	OIDCRedirect    string
+	OIDCSecret      string // optional: public PKCE clients have none
+	OIDCGroup       string // the ID token must list this group
+	OIDCGroupsClaim string
+	SessionSecret   []byte
+	MCPToken        string // empty disables the HTTP MCP endpoint
+	MaxUploadMB     int
+	TrustedProxy    []netip.Prefix
 }
 
 // Env abstracts the process environment for tests.
@@ -98,6 +100,8 @@ func Load(args []string, env Env, usage io.Writer) (*Config, error) {
 	fs.StringVar(&auth, "auth", str("AUTH", "on"), "on or off (off is for local development and requires a loopback bind)")
 	fs.StringVar(&c.OIDCIssuer, "oidc-issuer", str("OIDC_ISSUER", ""), "OIDC issuer URL")
 	fs.StringVar(&c.OIDCClientID, "oidc-client-id", str("OIDC_CLIENT_ID", ""), "OIDC client id")
+	fs.StringVar(&c.OIDCGroup, "oidc-required-group", str("OIDC_REQUIRED_GROUP", "FinRep_Users"), "group the ID token must contain to be allowed in")
+	fs.StringVar(&c.OIDCGroupsClaim, "oidc-groups-claim", str("OIDC_GROUPS_CLAIM", "groups"), "ID token claim that lists the user's groups")
 	fs.StringVar(&c.OIDCRedirect, "oidc-redirect", str("OIDC_REDIRECT", ""), "OIDC redirect URL (…/auth/callback)")
 	fs.StringVar(&secretFlag, "session-secret", "", "session signing secret, at least 32 bytes (prefer FINREP_SESSION_SECRET or _FILE)")
 	fs.StringVar(&c.MCPToken, "mcp-token", "", "bearer token for HTTP MCP; empty disables it (prefer FINREP_MCP_TOKEN or _FILE)")
@@ -190,6 +194,12 @@ func (c *Config) validate() []error {
 		}
 		if c.OIDCClientID == "" {
 			add("--oidc-client-id is required with --auth=on")
+		}
+		if strings.TrimSpace(c.OIDCGroup) == "" {
+			add("--oidc-required-group must not be empty with --auth=on; access is limited to members of that group")
+		}
+		if strings.TrimSpace(c.OIDCGroupsClaim) == "" {
+			add("--oidc-groups-claim must not be empty with --auth=on")
 		}
 	} else if !isLoopback(c.Bind) {
 		add("--auth=off is only allowed on a loopback address, but --bind is %q", c.Bind)

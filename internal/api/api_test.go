@@ -63,7 +63,7 @@ func newRig(t *testing.T, authOn bool) *rig {
 				"token_endpoint": "http://" + r.Host + "/t", "jwks_uri": "http://" + r.Host + "/k"})
 		}))
 		t.Cleanup(idp.Close)
-		o, err := authn.NewOIDC(ctx, authn.OIDCConfig{Issuer: idp.URL, ClientID: "x", RedirectURL: "http://example.com/auth/callback"}, s)
+		o, err := authn.NewOIDC(ctx, authn.OIDCConfig{Issuer: idp.URL, ClientID: "x", RedirectURL: "http://example.com/auth/callback", RequiredGroup: "FinRep_Users"}, s)
 		if err != nil {
 			t.Fatal(err)
 		}

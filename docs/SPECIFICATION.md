@@ -156,7 +156,7 @@ Resources: accounts (with billing rules), categories (merge, delete, filter by `
 Read-only tools: `list_accounts`, `get_account_summary`, `query_transactions`, `get_net_worth_trend`, `get_category_breakdown`, `get_cash_flow`, `get_recurring`, `get_statements` (with settlement info and upcoming bills). Transports: **stdio** (`--mode=mcp`) and **Streamable HTTP/SSE** mounted under `/mcp`. Transport routes are covered by integration tests. HTTP MCP authenticates with a static bearer token from configuration (OIDC redirect flows do not work for agents).
 
 ## 10. Security
-- OIDC Authorization Code + PKCE (Authentik). ID token validated (issuer, audience, nonce, signature via JWKS). The single-tenant allow-list of subjects/emails is Phase 2; until then access is controlled by the Authentik application's own policy.
+- OIDC Authorization Code + PKCE (Authentik). ID token validated (issuer, audience, nonce, signature via JWKS). **Group membership is required:** the ID token must list the group `FinRep_Users` (configurable with `--oidc-required-group`; the claim is `groups`, configurable with `--oidc-groups-claim`, and may be a list or a single string). The match is exact and case-sensitive; a user who authenticates but is not in the group gets a 403 and no session. The group cannot be set to empty. Membership is checked at login only, so removing someone from the group takes effect when their session ends (24 h idle, 30 days at most). The single-tenant allow-list of subjects/emails is Phase 2.
 - Session: HMAC-signed, `HttpOnly`, `Secure` (when behind HTTPS), `SameSite=Lax`, sliding 24 h expiry. **Session key comes from configuration; with auth enabled the server refuses to start without it.**
 - Dev mode (`--auth=off`) only binds to loopback.
 - CSRF: state-changing requests require a custom header plus same-origin check.
@@ -166,7 +166,7 @@ Read-only tools: `list_accounts`, `get_account_summary`, `query_transactions`, `
 - Secrets (LLM key, session key, MCP token) live in env/config files excluded from git and Docker context; API never returns them.
 
 ## 11. Configuration and operations
-Flags with env fallbacks: `--port`, `--log-level`, `--mode web|mcp`, `--db-path`, `--auth on|off`, `--oidc-issuer`, `--oidc-client-id`, `--oidc-redirect`, `--session-secret`, (`FINREP_OIDC_CLIENT_SECRET[_FILE]`, optional, env only), `--mcp-token`, `--max-upload-mb`. Trusts `X-Forwarded-*` from a configured proxy list (Cosmos OS). Structured `slog` logging. Graceful shutdown. `/healthz`.
+Flags with env fallbacks: `--port`, `--log-level`, `--mode web|mcp`, `--db-path`, `--auth on|off`, `--oidc-issuer`, `--oidc-client-id`, `--oidc-redirect`, `--oidc-required-group`, `--oidc-groups-claim`, `--session-secret`, (`FINREP_OIDC_CLIENT_SECRET[_FILE]`, optional, env only), `--mcp-token`, `--max-upload-mb`. Trusts `X-Forwarded-*` from a configured proxy list (Cosmos OS). Structured `slog` logging. Graceful shutdown. `/healthz`.
 
 Build: `Taskfile.yaml` (`build`, `dev`, `test`, `lint`, `docker-build`). `Dockerfile` multi-stage, non-root user. `.dockerignore` and `.gitignore` exclude data, CSVs, PDFs, DB files and local config.
 
