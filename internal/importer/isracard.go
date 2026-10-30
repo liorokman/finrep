@@ -57,7 +57,9 @@ func parseIsracardRows(rows []pdfRow, filename string) (*Parsed, error) {
 		}
 		isForeignHeader := strings.Contains(text, `רכישות בחו"ל`) && len(r.Cells) <= 3
 		isLocalHeader := strings.Contains(text, "עסקות שחויבו")
-		if (isForeignHeader || isLocalHeader) && len(pending) > 0 {
+		// A section that runs onto the next page repeats its header; that is a continuation, not a new section.
+		sameScope := (isForeignHeader && scope == ledger.TxForeign) || (isLocalHeader && scope == ledger.TxLocal)
+		if (isForeignHeader || isLocalHeader) && len(pending) > 0 && !sameScope {
 			return nil, fmt.Errorf("%s: a new section starts but %d charge(s) of the previous one have no total", filename, len(pending))
 		}
 		if isForeignHeader {
@@ -118,14 +120,18 @@ func isracardLine(r pdfRow, scope ledger.TxScope) (Line, bool, error) {
 	// The purchase date is the right-most DD/MM/YY cell.
 	date := ""
 	var nums, symbols []cell
-	for _, c := range r.Cells {
+	for i, c := range r.Cells {
 		if c.X0 >= isrDateMin {
-			if d, ok := isoShort(c); ok {
+			if d, ok := isracardDate(c); ok {
 				date = d
 				continue
 			}
 		}
 		if _, ok := shekelOf(c); ok {
+			// An amount printed beside a discount note ("₪ 2.50 הנחה") is part of the note, not the charge.
+			if i+1 < len(r.Cells) && strings.Contains(r.Cells[i+1].Text, "הנחה") {
+				continue
+			}
 			nums = append(nums, c)
 		} else if _, ok := symbolCurrency[strings.TrimSpace(c.Text)]; ok {
 			symbols = append(symbols, c)
@@ -160,8 +166,17 @@ func isracardLine(r pdfRow, scope ledger.TxScope) (Line, bool, error) {
 			}
 		}
 	} else {
-		merchant = wordsIn(r.Cells, isrDomMerchant, isrDomCard)
-		sector = wordsIn(r.Cells, isrDomSector, isrDomMerchant)
+		cells := r.Cells
+		// A Latin merchant can start a little left of the merchant band. (Latin text further left is a sector label such as CASHBACK.)
+		shifted := make([]cell, len(cells))
+		copy(shifted, cells)
+		for i, c := range shifted {
+			if c.X0 >= isrDomMerchant-25 && c.X0 < isrDomMerchant && !hasHebrew(c.Text) && hasLatin(c.Text) {
+				shifted[i].X0 = isrDomMerchant
+			}
+		}
+		merchant = wordsIn(shifted, isrDomMerchant, isrDomCard)
+		sector = wordsIn(shifted, isrDomSector, isrDomMerchant)
 		flags = wordsIn(r.Cells, isrDomCard, isrDateMin)
 	}
 	if merchant == "" {
@@ -185,4 +200,35 @@ func isracardLine(r pdfRow, scope ledger.TxScope) (Line, bool, error) {
 	}
 	l.Notes = strings.Join(notes, "; ")
 	return l, true, nil
+}
+
+// older statements print the payment flag glued to the purchase date ("02/06/23ל")
+var isracardDateGlued = regexp.MustCompile(`^(?:\p{L}\s*)?(\d{2}/\d{2}/\d{2})(?:\s*\p{L})?$`)
+
+func isracardDate(c cell) (string, bool) {
+	if d, ok := isoShort(c); ok {
+		return d, true
+	}
+	if m := isracardDateGlued.FindStringSubmatch(strings.TrimSpace(c.Text)); m != nil {
+		return isoShort(cell{X0: c.X0, X1: c.X1, Text: m[1]})
+	}
+	return "", false
+}
+
+func hasHebrew(s string) bool {
+	for _, r := range s {
+		if r >= 0x0590 && r <= 0x05FF {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLatin(s string) bool {
+	for _, r := range s {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			return true
+		}
+	}
+	return false
 }

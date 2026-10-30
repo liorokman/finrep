@@ -86,10 +86,25 @@ func parseLeumiCardRows(rows []pdfRow, filename string) (*Parsed, error) {
 				return nil, fmt.Errorf("%s: unreadable statement date %q", filename, m[1])
 			}
 			var total *money.Money
+			var foreignTotal *money.Money
 			for _, c := range r.Cells {
 				if v, ok := shekelOf(c); ok {
 					total = &v
+				} else if v, ok := amountOf(c); ok {
+					foreignTotal = &v
 				}
+			}
+			if total == nil && foreignTotal != nil {
+				// A section billed in a foreign currency (a euro purchase, say) is not part of the shekel statement:
+				// the bank debit equals the shekel total alone, so it is settled separately (in a foreign-currency
+				// account). Leave its lines out of the shekel ledger and say so.
+				if len(pending) > 0 {
+					p.Lines = p.Lines[:len(p.Lines)-len(pending)]
+				}
+				p.Warnings = append(p.Warnings, fmt.Sprintf("%d charge(s) totalling %s, billed in %s on %s, are billed separately in that currency, not in the shekel debit, and were left out",
+					len(pending), foreignTotal, foreignTotal.Currency(), iso))
+				pending = nil
+				continue
 			}
 			if total == nil {
 				return nil, fmt.Errorf("%s: total row for %s has no amount", filename, iso)
@@ -143,23 +158,39 @@ func parseLeumiCardRows(rows []pdfRow, filename string) (*Parsed, error) {
 	return p, nil
 }
 
+// leumiGluedDate matches a dd/mm/yy date immediately followed by merchant text in one cell.
+var leumiGluedDate = regexp.MustCompile(`^(\d{2}/\d{2}/\d{2})(\D.+)$`)
+
 func leumiCardLine(r pdfRow, sec leumiSection) (Line, bool, error) {
 	if sec == secNone {
 		return Line{}, false, nil
 	}
 	date := ""
 	var nums []cell
-	for _, c := range r.Cells {
+	cells := append([]cell(nil), r.Cells...)
+	for i, c := range cells {
 		if c.X0 >= lcDateMin {
 			if d, ok := isoShort(c); ok {
 				date = d
 				continue
 			}
 		}
+		// The purchase date can be glued to the first word of the merchant ("14/03/25י.א."), which makes the
+		// cell start a little left of a plain date. Split them.
+		if c.X0 >= lcDateMin-25 {
+			if m := leumiGluedDate.FindStringSubmatch(strings.TrimSpace(c.Text)); m != nil {
+				if d, ok := isoFrom2(m[1]); ok {
+					date = d
+					cells[i] = cell{X0: lcMerchHi - 0.5, X1: c.X1, Text: m[2]}
+					continue
+				}
+			}
+		}
 		if _, ok := shekelOf(c); ok {
 			nums = append(nums, c)
 		}
 	}
+	r.Cells = cells
 	if date == "" || len(nums) == 0 {
 		return Line{}, false, nil
 	}

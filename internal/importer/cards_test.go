@@ -3,6 +3,7 @@ package importer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/liorokman/finrep/internal/ledger"
@@ -275,4 +276,60 @@ func TestRealStatementsImportAndReconcile(t *testing.T) {
 		t.Errorf("expected 4 statements with totals, got %d", n)
 	}
 	t.Logf("%d lines imported across %d statements", imported, n)
+}
+
+func TestIsracardOlderLayoutsAndSpecialRows(t *testing.T) {
+	// 2023: the payment flag is glued to the purchase date.
+	for in, want := range map[string]string{"02/06/23ל": "2023-06-02", "ל02/06/23": "2023-06-02", "02/06/23": "2023-06-02"} {
+		if got, ok := isracardDate(cell{Text: in}); !ok || got != want {
+			t.Errorf("%q: %q %v", in, got, ok)
+		}
+	}
+	if _, ok := isracardDate(cell{Text: "תש. 02/06/23 x"}); ok {
+		t.Error("text around a date must not be accepted")
+	}
+
+	// A discount note beside the real charge must not become the amount (Jan 2024: 50.00 with "₪ 2.50 הנחה").
+	r := row(84, "סטייל", 100, "₪ 2.50", 121, "הנחה", 175, "50.00", 234, "50.00", 284, "פנאי/ספורט", 397, "חקלאית", 428, "חויה", 456, "נייד", 470, "תש.", 500, "01/12/23")
+	l, ok, err := isracardLine(r, ledger.TxLocal)
+	if err != nil || !ok || l.Amount.Minor() != -5000 {
+		t.Fatalf("discount row: %+v %v %v", l, ok, err)
+	}
+
+	// A Latin merchant that starts just left of the merchant band is still the merchant, and a Latin
+	// sector label further left (CASHBACK) is not.
+	r = row(173, "315.00", 233, "315.00", 277, "מסעדות/קפה", 352, "LLI RISTORANTE-CAFFE", 456, "נייד", 470, "תש.", 496, "23/06/23")
+	if l, ok, err := isracardLine(r, ledger.TxLocal); err != nil || !ok || l.Payee != "LLI RISTORANTE-CAFFE" {
+		t.Fatalf("latin merchant: %+v %v %v", l, ok, err)
+	}
+}
+
+func TestIsracardSectionContinuesOnTheNextPage(t *testing.T) {
+	header := row(427, `בחו"ל`, 457, "רכישות")
+	rows := []pdfRow{
+		row(305, "|   1002", 336, "בספרות:", 368, "שמסתיים", 403, "כרטיס"),
+		row(407, "10/07/26", 442, "לתאריך:", 472, "פעולותיך", 505, "פרוט"),
+		header,
+		row(166, "4.00", 355, "₪ 4.00", 383, "STORE ONE", 483, "א", 490, "02/05/26"),
+		header, // page 2 repeats the section header while the charge above still has no total
+		row(166, "6.00", 355, "₪ 6.00", 383, "STORE TWO", 483, "א", 490, "03/05/26"),
+		row(157, "10.00", 412, "02/07/26", 451, "לתאריך", 481, "חיוב", 499, `סה"כ`),
+	}
+	p, err := parseIsracardRows(rows, "x.pdf")
+	if err != nil || len(p.Lines) != 2 || p.Statements[0].PrintedTotal.Minor() != 1000 {
+		t.Fatalf("%v %+v", err, p)
+	}
+	// But a different section starting while charges are pending is still an error.
+	bad := append(append([]pdfRow{}, rows[:4]...), row(359, "בארץ", 386, "זוכו -", 413, "/", 422, "שחויבו", 459, "עסקות"))
+	if _, err := parseIsracardRows(bad, "x.pdf"); err == nil {
+		t.Fatal("a new section with unfinished charges must still be refused")
+	}
+}
+
+func TestLeumiCardDateGluedToTheMerchant(t *testing.T) {
+	r := row(247, "55.00", 294, "55.00", 367, "רגילה", 425, `בע"מ`, 441, "בנין", 452, "חומרי", 470, "ליאל", 484, "14/03/25י.א.", 526, "7")
+	l, ok, err := leumiCardLine(r, secDomestic)
+	if err != nil || !ok || l.Date != "2025-03-14" || l.Amount.Minor() != -5500 || !strings.Contains(l.Payee, "י.א.") || !strings.Contains(l.Payee, "ליאל") {
+		t.Fatalf("%+v %v %v", l, ok, err)
+	}
 }

@@ -46,8 +46,30 @@ func openPDF(data []byte) (*pdf.Reader, error) {
 	if err == nil {
 		return r, nil
 	}
+	// Some generators leave junk before the header (a stray "System.IO.MemoryStream") or after %%EOF.
+	// Work on an in-memory slice; the file itself is never touched.
+	start, end := 0, len(data)
+	if i := bytes.Index(data[:min(len(data), 4096)], []byte("%PDF-")); i >= 11 {
+		// The offsets in the file usually count the junk, so keep its length: overwrite it, in a copy, with a
+		// valid header and a comment of exactly the same size.
+		fixed := append([]byte(nil), data...)
+		copy(fixed, "%PDF-1.4\n%")
+		for j := 10; j < i-1; j++ {
+			fixed[j] = ' '
+		}
+		fixed[i-1] = '\n'
+		if r2, err2 := pdf.NewReader(bytes.NewReader(fixed), int64(len(fixed))); err2 == nil {
+			return r2, nil
+		}
+		start = i
+	} else if i > 0 {
+		start = i
+	}
 	if i := bytes.LastIndex(data, []byte("%%EOF")); i >= 0 && i+5 < len(data) {
-		trimmed := data[:i+5]
+		end = i + 5
+	}
+	if start > 0 || end < len(data) {
+		trimmed := data[start:end]
 		if r2, err2 := pdf.NewReader(bytes.NewReader(trimmed), int64(len(trimmed))); err2 == nil {
 			return r2, nil
 		}

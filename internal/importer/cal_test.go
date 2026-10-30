@@ -191,10 +191,10 @@ func TestRealCalPDF(t *testing.T) {
 
 func TestSplitDateFromAMixedCell(t *testing.T) {
 	for in, want := range map[string][2]string{
-		"21/06/2024":              {"2024-06-21", ""},
+		"21/06/2024":               {"2024-06-21", ""},
 		" 21/06/2024וניליה דרורים": {"2024-06-21", "וניליה דרורים"},
 		"וניליה דרורים 21/06/2024": {"2024-06-21", "וניליה דרורים"},
-		"AMAZON 05/01/2026":       {"2026-01-05", "AMAZON"},
+		"AMAZON 05/01/2026":        {"2026-01-05", "AMAZON"},
 	} {
 		iso, rest, ok := splitDate(cell{Text: in})
 		if !ok || iso != want[0] || rest != want[1] {
@@ -205,5 +205,19 @@ func TestSplitDateFromAMixedCell(t *testing.T) {
 		if _, _, ok := splitDate(cell{Text: in}); ok {
 			t.Errorf("%q accepted", in)
 		}
+	}
+}
+
+func TestOpenPDFToleratesJunkBeforeTheHeaderAndAfterEOF(t *testing.T) {
+	if _, err := openPDF([]byte("System.IO.MemoryStream not a pdf at all")); err == nil {
+		t.Fatal("garbage accepted")
+	}
+	// A real (generated) minimal PDF, wrapped in junk on both sides, still opens.
+	const pdf = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R/Size 3>>\n%%EOF"
+	if _, err := openPDF([]byte(pdf)); err != nil {
+		t.Skipf("the minimal PDF is not accepted by the reader itself: %v", err)
+	}
+	if _, err := openPDF([]byte("System.IO.MemoryStream" + pdf + "\x00\x00junk")); err != nil {
+		t.Fatalf("junk around a valid PDF: %v", err)
 	}
 }
