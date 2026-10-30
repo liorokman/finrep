@@ -1,2 +1,20 @@
-web/node_modules
-data
+# Financial data and anything derived from it
+/data/
+*.csv
+*.pdf
+*.xls
+*.xlsx
+*.db
+*.db-shm
+*.db-wal
+!**/testdata/**
+
+# Secrets and local config
+ccpdf*.json
+*.local.*
+.env
+
+# Build output
+/finrep
+/ccpdf2csv
+/web/node_modules/

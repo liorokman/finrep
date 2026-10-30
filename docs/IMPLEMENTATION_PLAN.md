@@ -1,164 +1,73 @@
-# Implementation Plan: Financial Reporting & Ledger Application
+# finrep v2 — Implementation Plan
 
-Build a production-grade, self-hosted financial reporting and ledger application in **Go 1.26** using **Labstack Echo**, **SQLite3** (`modernc.org/sqlite` CGO-free with WAL mode), **Vite + TypeScript + Tailwind CSS**, **OIDC PKCE authentication** (Authentik with dev bypass mode), **LocalAI batch categorization** with AI new category suggestion & approval workflows, **1-to-many statement payment reconciliation**, **Israeli installment tracking ("תשלומים")**, **CSV mapper with Windows-1255 auto-conversion**, **MCP server engine** over Stdio and Echo HTTP SSE (`mark3labs/mcp-go`), **10-report visual analytics suite**, and **Taskfile.yaml** automation.
+Branch: `rewrite`. Reference: `docs/SPECIFICATION.md`. Old code stays in place until each area is replaced; the ccpdf parsers, CSV fixtures in `data/`, and their tests are ported, not rewritten.
 
----
+Each phase ends green: `go build ./... && go vet ./... && go test ./...`, with the listed acceptance tests.
 
-## Architecture Overview
+## Phase 0 — Hygiene (before any feature work)
+- `.gitignore` / `.dockerignore`: `data/`, `*.csv`, `*.pdf`, `*.db*`, `ccpdf*.json`, `*.local.*`, built binaries, `web/node_modules`.
+- Move secrets out of the tree; rotate the LocalAI key found in `ccpdf*.json`.
+- Remove the stray `leumi-2026-09.csv` from the root (move under ignored `data/`).
 
-```mermaid
-flowchart TD
-    subgraph Client Layer
-        WebUI[Vite + TS + Tailwind Single Page App]
-        MCPClient[Claude / AI Agent via MCP]
-    end
+## Phase 1 — Foundation  *(done: `internal/money`, `internal/store`, `internal/conf`, `cmd/finrep`)*
+Package names: `store` (database), `conf` (configuration), `money`. The old `internal/{database,config}` packages remain until their replacements land and are then deleted. HTTP uses the standard library `net/http` mux; the Echo dependency goes away with the old server. The money type is our own (the libraries don't parse statement amounts such as `₪ 1,003.05`).
+- Layout: `cmd/finrep`, `internal/{config,db,money,ledger,importer,categorize,statements,reports,fx,api,auth,mcpsrv,web}`.
+- `money`: integer minor-unit type, parsing/formatting, tests.
+- `db`: migrations (fresh v2 schema, §13), single transaction helper, shared transaction scanner.
+- `config`: flags + env, validation (refuse to start with auth on and no session secret).
+- Acceptance: migrations apply to empty DB; money round-trips; config validation tests.
 
-    subgraph Server Layer [Go 1.26 + Echo Framework]
-        Router[Echo Router & Middleware]
-        AuthEngine[OIDC PKCE Auth & Dev Bypass]
-        CSVEngine[CSV Mapper & Charset Detector Win-1255 -> UTF-8]
-        LocalAIService[LocalAI Batch Categorization & Category Suggestion Service]
-        ReconEngine[1-to-1 & 1-to-Many Reconciliation Service]
-        MCPEngine[MCP Transport Engine Stdio + HTTP SSE]
-        ReportEngine[10-Report Visual Analytics Engine]
-    end
+## Phase 2 — Ledger core
+- Accounts (owner, currency, billing rules), categories (merge, delete, `created_by`), transactions CRUD, bulk update, pagination caps.
+- Acceptance: category delete/merge re-points transactions in one database transaction.
 
-    subgraph Data & Storage
-        SQLite[(SQLite3 DB WAL Mode + DDL Migrations)]
-        LocalAIAPI[LocalAI / Ollama Endpoint /v1/chat/completions]
-    end
+## Phase 3 — Import
+- Encoding detection (BOM, `utf8.Valid`, Windows-1255), format-aware date parser, column mapper (no saved presets in v1).
+- Tag each card charge `LOCAL`/`FOREIGN`; keep the issuer's bill date from the file.
+- Dedup key by in-file ordinal; batches + undo; stage/commit API.
+- Port ccpdf Isracard/Cal/Leumi parsers behind the same importer interface; optional LLM spacing fix.
+- Acceptance: import-twice-inserts-zero property test; BOM/emoji/Windows-1255/`MM/DD/YYYY` fixtures; PDF fixture tests from `data/*.pdf`.
 
-    WebUI -->|REST / JSON| Router
-    MCPClient -->|Stdio or SSE /mcp/sse| MCPEngine
-    Router --> AuthEngine
-    Router --> CSVEngine
-    Router --> LocalAIService
-    Router --> ReconEngine
-    Router --> ReportEngine
-    LocalAIService -->|HTTP REST| LocalAIAPI
-    CSVEngine --> SQLite
-    ReconEngine --> SQLite
-    ReportEngine --> SQLite
-    MCPEngine --> SQLite
-```
+## Phase 4 — Categorization
+- Categorization runs: classifier model picks an existing category with confidence; ≥ 0.75 applies; otherwise the generator model creates (or reuses by name) a category. Records model, confidence and run id; batching, retry, cancel, run-scoped state; run undo.
+- Acceptance (fake LLM servers): threshold behavior at 0.74/0.75; unknown ids ignored; new categories de-duplicated; manual categories never overwritten; undo restores state; cancel+restart does not leak state.
 
----
+## Phase 5 — Card billing, statements and settlements
+- Billing rules per card (scope, bill day, month offset, optional cutoff day), weekend shift, month-end clamping; issuer bill date from file overrides computed date.
+- Statements grouped by `(account, scope, bill_date)`, including upcoming ones; settlement states UPCOMING/BILLED/PARTIAL/PAID; external payments.
+- Auto-match proposals for unlinked, undecided bank debits; sticky manual decisions; payee hints from settings.
+- Acceptance: the Isracard foreign case (September purchase → 2 November); the Cal local case around its cutoff day (9th vs 10th); a purchase on the 31st; leap-year February; re-running auto-match is idempotent and never touches manual links.
 
-## User Review Required
+## Phase 6 — Reserved
+- Formerly FX. Foreign-currency bank accounts and exchange rates moved to Phase 2 of the product (spec §15); this slot is free for overflow.
 
-> [!IMPORTANT]
-> Key architectural decisions incorporated into the implementation plan:
-> 1. **Deduplication Hash with Ordinal**: `import_hash` uses `SHA-256(account_id | date | amount | payee raw | daily_occurrence_ordinal)` to correctly distinguish multiple identical transactions on the same day while preventing duplicate imports across overlapping CSV files.
-> 2. **Single Credit Card Transaction Settlement Invariant**: Added `UNIQUE(credit_card_transaction_id)` to `account_transfers` table to ensure 1 credit card transaction can never be double-settled across multiple bank lump-sum debits.
-> 3. **AI Category Suggestion & User Approval Lifecycle**: LocalAI can suggest new categories (`suggested_category_he`, `suggested_category_en`, `suggested_category_type`). UI renders approval cards (`[ Accept & Create Category ]` / `[ Reject / Pick Existing ]`). Accepting creates the row in `categories` and links the transaction.
-> 4. **Echo SSE Unbuffered Streaming**: `/mcp/` path prefix is explicitly bypassed from Gzip response compression to support unbuffered HTTP SSE transport.
-> 5. **Dev Authentication Bypass**: Running `--oidc-enabled=false` automatically populates local admin context (`dev-admin`), allowing seamless offline development.
+## Phase 7 — Reports
+- `ledger_view` (SQL view) implementing §3; ten reports as functions over it; shared filter.
+- Acceptance: reconciliation test — every report's total ties to the seeded ledger; transfers/settlements never double count.
 
----
+## Phase 8 — Auth and API hardening
+- OIDC with real ID-token validation (allow-list is product Phase 2); signed sliding sessions; CSRF header; body/upload caps; settings allow-list with write-only secrets; trusted-proxy handling; `/healthz`.
+- Acceptance: fake-OIDC integration test; forged-cookie and CSRF tests.
 
-## Proposed Changes & Phased Implementation
+## Phase 9 — MCP
+- Eight read-only tools over the same services; stdio and Streamable HTTP under `/mcp`; static bearer-token auth.
+- Acceptance: integration tests list tools and call them over **both** transports.
 
----
+## Phase 10 — Web UI
+- Design pass first (type scale, spacing, colour tokens, light/dark, RTL rules) as a small static prototype for sign-off.
+- Then build the views listed in spec §13 (including Cards & statements by owner and the upcoming-bills timeline) with an escaping-by-construction component layer, accessible charts, click-through filtering.
+- Acceptance: browser smoke tests for import → categorize → settle → report; axe accessibility check; Hebrew/English bidi snapshot checks.
 
-### Phase 1: Project Setup, CLI Config, Database & Migrations
+## Phase 11 — Packaging
+- Embedded UI build, Dockerfile (non-root, healthcheck), compose example, Taskfile, README (setup, auth, backup/restore, importing, MCP client config).
 
-#### [NEW] `Taskfile.yaml`
-- Task runner configuration for `build-ui`, `build`, `dev` (`--log-level=debug --oidc-enabled=false`), `run-mcp`, `test`, `docker-build`, `docker-up`.
+## Decisions captured
+- Rewrite in place on branch `rewrite`; clean DB with re-import from source files; frontend technology chosen on merit in Phase 10 and signed off via the prototype.
+- Money: integer minor units with ISO 4217 code (`go-money` or a thin own type; decided in Phase 1).
+- Cards: per-card billing rules with owner; issuer bill date from the file wins. Categorization: classifier ≥ 0.75, else generator creates a category; no suggestion queue. MCP: static bearer token. Net worth includes unsettled card liabilities.
+- Not implemented in the old code, so deferred (spec §15): splits, rules, saved presets, widget registry, FX/foreign bank accounts, OIDC allow-list, multi-statement auto-match.
 
-#### [MODIFY] `go.mod`
-- Dependencies: `github.com/labstack/echo/v4`, `modernc.org/sqlite`, `github.com/mark3labs/mcp-go`, `golang.org/x/text`.
-
-#### [NEW] `internal/config/config.go`
-- Config struct with CLI flag parsing (`--port`, `--log-level`, `--mode`, `--db-path`, `--oidc-enabled`) and environment variable fallbacks (`PORT`, `LOG_LEVEL`, `MODE`, `DB_PATH`, `OIDC_ENABLED`).
-
-#### [NEW] `internal/logger/logger.go`
-- `log/slog` structured logger with dynamic log level control (`slog.LevelVar`).
-
-#### [NEW] `internal/models/models.go`
-- Domain structs for Account, Transaction, Category, TransactionSplit, AccountTransfer, ImportPreset, CategorizationRule, Setting, and Report Data models.
-
-#### [NEW] `internal/database/migrations.go` & `internal/database/database.go` & `internal/database/queries.go`
-- SQLite WAL mode connection pool (`modernc.org/sqlite`).
-- Versioned schema migration runner managing `schema_migrations`.
-- SQL queries for Accounts, Transactions (with `import_hash` ordinal generation), Category creation & suggestion approval, Splits, Transfers, and Settings.
-
----
-
-### Phase 2: MCP Server Engine (`mark3labs/mcp-go`)
-
-#### [NEW] `internal/mcp/server.go`
-- Registers MCP tools: `list_accounts`, `get_account_summary`, `query_transactions`, `get_net_worth_trend`, `get_category_breakdown`, `get_subscriptions`.
-
-#### [NEW] `internal/mcp/stdio.go`
-- Handles CLI stdio transport when `--mode=mcp`.
-
-#### [NEW] `internal/mcp/sse.go`
-- HTTP SSE transport handler mounted on Echo at `/mcp/sse` and `/mcp/messages`.
-
----
-
-### Phase 3: Echo Web Server, Router & OIDC Security
-
-#### [NEW] `cmd/server/main.go`
-- Application entrypoint, CLI flag parsing, Echo router setup, Cosmos OS proxy trust (`IPExtractor`), static files embedded via `embed.FS`, graceful shutdown.
-
-#### [NEW] `internal/auth/pkce.go` & `internal/auth/middleware.go`
-- OIDC PKCE OAuth2 state generation & PKCE verifier validation.
-- Echo session authentication middleware with `--oidc-enabled=false` dev bypass.
-
-#### [NEW] `internal/handlers/handlers.go`
-- REST Handlers: Accounts API, Transactions API, Category Suggestion Accept/Reject API, Split API, Import API, Reconciliation API, LocalAI Settings API, Reports API.
-
----
-
-### Phase 4: Business Logic: CSV Engine, LocalAI Categorization, Reconciliation & Reports
-
-#### [NEW] `internal/parser/csv.go`
-- Streaming character encoding conversion (`Windows-1255` / `CP1255` $\rightarrow$ `UTF-8`).
-- Header-mapped parsing, Israeli installment extraction ("תשלום 2 מתוך 12"), SHA-256 import hash with daily occurrence ordinal.
-
-#### [NEW] `internal/services/reconciliation.go`
-- 1-to-1 and 1-to-Many lump-sum statement reconciliation engine ($\sum \text{amount}_{\text{cc}} = |\text{amount}_{\text{bank}}|$).
-
-#### [NEW] `internal/localai/batch.go`
-- Go REST client communicating with LocalAI `/v1/chat/completions` (20-50 transactions per batch). Strips markdown fenced JSON, parses matched category IDs or `suggested_category` objects.
-
-#### [NEW] `internal/services/reports.go`
-- Aggregation engines for 10 visual reports: Net Worth, Cash Flow, Category Donut, Sankey Flow, Budget vs Actual, Subscriptions & Fixed Costs, MoM Heatmap, CC Payoff Forecast, Foreign Currency Billed Analysis, Anomaly Detector.
-
----
-
-### Phase 5: Web UI (Vite + TypeScript + Tailwind CSS)
-
-#### [NEW] `web/` Setup
-- `web/package.json`, `web/vite.config.ts`, `web/tailwind.config.js`, `web/index.html`, `web/src/styles/main.css`.
-
-#### [NEW] `web/src/widgets/` & `web/src/components/` & `web/src/views/`
-- Pluggable Dashboard Widgets (Net Worth, Cash Flow, Category Donut, Sankey, Budget vs Actual, Subscriptions, MoM Heatmap, CC Payoff, Foreign Billed, Anomaly Detector).
-- Components: Navbar, AccountCard, TransactionTable, CategorySuggestionCard (`Accept & Create`, `Reject / Pick Existing`), CSVImporter, TransferMatcher, OIDCCopyBox.
-- Views: DashboardView, AccountsView, TransactionsView, ImportView, ReconciliationView, SettingsView, ExportsView.
-
----
-
-### Phase 6: Docker Containerization
-
-#### [NEW] `Dockerfile` & `docker-compose.yml`
-- Multi-stage Docker build producing static Go executable with embedded Vite UI assets.
-
----
-
-## Verification Plan
-
-### Automated Tests
-- `go test -v ./...` - Test DB migrations, SQL queries, CSV mapper & Windows-1255 conversion, SHA-256 ordinal hashing, LocalAI JSON suggestion parser, 1-to-many reconciliation heuristics.
-- `cd web && npm run build` - Validate TypeScript compilation and Tailwind CSS bundling.
-- `go build -o finrep ./cmd/server` - Validate single-binary Go compilation.
-
-### Manual Verification
-1. Launch app in dev mode (`go run ./cmd/server --oidc-enabled=false --log-level=debug`).
-2. Create Bank and Credit Card accounts via UI.
-3. Import sample Bank Hapoalim / Max CSV files with Windows-1255 encoding and Hebrew merchant names.
-4. Trigger LocalAI batch categorization and verify pending AI Category Suggestion cards appear.
-5. Click `[ Accept & Create Category ]`, verify category is inserted into SQLite and transaction updated.
-6. Test 1-to-Many reconciliation linking a Bank debit to multiple Credit Card transactions.
-7. Verify all 10 reports load correctly on the Pluggable Dashboard.
+## Risks
+- PDF parsing depends on bank layouts; keep fixtures and fail loudly with the offending line.
+- Auto-match false positives; mitigated by proposals-first and sticky manual decisions.
+- UI scope is the largest item; the prototype gate keeps rework small.
