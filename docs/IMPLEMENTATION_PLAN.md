@@ -21,7 +21,7 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - Accounts (owner, currency, billing rules), categories (merge, delete, `created_by`), transactions CRUD, bulk update, pagination caps.
 - Acceptance: category delete/merge re-points transactions in one database transaction.
 
-## Phase 3 — Import  *(3a done: importer core + Leumi bank export; next: Cal PDF, Isracard PDF, Leumi card PDF, CSV mapper)*
+## Phase 3 — Import  *(3a importer core + Leumi bank export, 3b Cal PDF: done; next: Isracard PDF, Leumi card PDF, CSV mapper)*
 - Encoding detection (BOM, `utf8.Valid`, Windows-1255), format-aware date parser, column mapper (no saved presets in v1).
 - Tag each card charge `LOCAL`/`FOREIGN`; keep the issuer's bill date from the file.
 - Dedup key by in-file ordinal; batches + undo; stage/commit API.
