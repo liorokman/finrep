@@ -32,7 +32,7 @@ Status: **draft for the `rewrite` branch.** Everything here is intended behaviou
 
 All reports use one `ledger_view` definition:
 
-1. **Spending** = negative transactions on any account whose category type is `EXPENSE` (or uncategorized, shown as "Uncategorized").
+1. **Spending** = transactions on any account whose category type is `EXPENSE`, plus uncategorized negative ones (shown as "Uncategorized"). The category's type decides the direction, so a positive refund in an `EXPENSE` category nets against spending instead of becoming income.
 2. **Income** = positive transactions whose category type is `INCOME` (or uncategorized).
 3. `TRANSFER` category, and any bank debit linked as a settlement of a card statement, are **excluded** from spending/income. The card charges themselves count, so nothing is counted twice.
 4. Dates: reports use the transaction (purchase) date; card statements also expose the bill date, and "cash view" reports can group card spending by bill date.
@@ -129,7 +129,7 @@ A statement is all of one card's charges billed on one bill date (`account_id`, 
 
 ## 7. Reports
 
-Each report is a pure function over `ledger_view` with a shared filter (accounts, date range, categories) and is available via REST and MCP.
+Each report is a pure function over the `ledger_view` SQL view (migration 0003, the one implementation of §3) with a shared filter (accounts, owner, date range, categories incl. "uncategorized", purchase vs. bill-date basis, gross vs. out-of-pocket measure, currency) and is available via REST and MCP. Spending reports default to gross; cash flow, Sankey, installment forecast and net worth default to out-of-pocket. v1 reports one currency at a time (ILS by default). A card charge with no bill date is placed on its purchase date under the bill-date basis, and is listed as "undated" in the card balances.
 
 1. Net worth trend (assets from ILS bank accounts; liabilities = card charges not yet settled by a bank debit, including statements not yet billed)
 2. Cash flow (income, spending, net, savings rate by month)

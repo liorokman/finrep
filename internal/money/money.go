@@ -223,3 +223,6 @@ func Parse(s string, cur Currency) (Money, error) {
 func FromFloat(f float64, cur Currency) Money {
 	return Money{int64(math.Round(f * math.Pow10(digitsFor(cur)))), cur}
 }
+
+// Digits is the number of decimal places of a currency's minor unit (2 for ILS, 0 for JPY).
+func Digits(cur Currency) int { return digitsFor(cur) }

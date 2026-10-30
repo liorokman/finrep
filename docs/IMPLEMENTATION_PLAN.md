@@ -42,7 +42,7 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 ## Phase 6 — Reserved
 - Formerly FX. Foreign-currency bank accounts and exchange rates moved to Phase 2 of the product (spec §15); this slot is free for overflow.
 
-## Phase 7 — Reports
+## Phase 7 — Reports  *(done: `internal/reports`, migration 0003 `ledger_view`; REST/MCP exposure comes with Phases 8-9)*
 - `ledger_view` (SQL view) implementing §3; ten reports as functions over it; shared filter.
 - Acceptance: reconciliation test — every report's total ties to the seeded ledger; transfers/settlements never double count.
 
