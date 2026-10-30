@@ -51,7 +51,7 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - MCP routes are mounted by Phase 9 (they authenticate with the static bearer token, not a session).
 - Acceptance: fake-OIDC integration test; forged-cookie and CSRF tests.
 
-## Phase 9 — MCP
+## Phase 9 — MCP  *(done: `internal/mcpsrv`, `internal/jsonx`; stdio via `--mode=mcp`, HTTP at `/mcp`)*
 - Eight read-only tools over the same services; stdio and Streamable HTTP under `/mcp`; static bearer-token auth.
 - Acceptance: integration tests list tools and call them over **both** transports.
 

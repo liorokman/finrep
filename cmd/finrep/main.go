@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/liorokman/finrep/internal/conf"
+	"github.com/liorokman/finrep/internal/mcpsrv"
 	"github.com/liorokman/finrep/internal/store"
 )
 
@@ -41,7 +41,9 @@ func run() error {
 	defer st.Close()
 
 	if cfg.Mode == "mcp" {
-		return errors.New("mcp stdio mode is not implemented yet")
+		// Stdout carries the protocol, so everything else (logs included) goes to stderr.
+		slog.Info("serving MCP on stdio", "db", cfg.DBPath)
+		return mcpsrv.ServeStdio(ctx, mcpServer(st))
 	}
 
 	a, err := build(ctx, cfg, st)

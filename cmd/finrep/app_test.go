@@ -100,3 +100,64 @@ func TestBuildFailsFastOnABadIdentityProvider(t *testing.T) {
 		t.Fatal("a short session secret must fail")
 	}
 }
+
+const mcpToken = "agent-token-0123456789"
+
+func mcpCall(h http.Handler, auth string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestMCPIsMountedOutsideTheSessionGate(t *testing.T) {
+	// Open mode.
+	a, _, err := newApp(t, &conf.Config{MaxUploadMB: 10, MCPToken: mcpToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := mcpCall(a.handler, "Bearer "+mcpToken); rec.Code != 200 || !strings.Contains(rec.Body.String(), "query_transactions") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if rec := mcpCall(a.handler, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", rec.Code)
+	}
+	if rec := mcpCall(a.handler, "Bearer wrong-token"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token: %d", rec.Code)
+	}
+	// No token configured: the endpoint does not exist, whatever the caller sends.
+	a, _, _ = newApp(t, &conf.Config{MaxUploadMB: 10})
+	if rec := mcpCall(a.handler, "Bearer "+mcpToken); rec.Code != http.StatusNotFound {
+		t.Fatalf("disabled: %d", rec.Code)
+	}
+}
+
+func TestMCPTokenDoesNotOpenTheRESTAPI(t *testing.T) {
+	// The idp only needs to answer discovery for the app to start with login enabled.
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"issuer": "http://" + r.Host, "authorization_endpoint": "http://" + r.Host + "/a",
+			"token_endpoint": "http://" + r.Host + "/t", "jwks_uri": "http://" + r.Host + "/k"})
+	}))
+	defer idp.Close()
+	cfg := &conf.Config{AuthEnabled: true, MaxUploadMB: 10, MCPToken: mcpToken, SessionSecret: []byte(strings.Repeat("s", 32)),
+		OIDCIssuer: idp.URL, OIDCClientID: "x", OIDCRedirect: "http://localhost/auth/callback", OIDCGroup: "FinRep_Users"}
+	a, _, err := newApp(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := mcpCall(a.handler, "Bearer "+mcpToken); rec.Code != 200 {
+		t.Fatalf("agents must get in with the token even when login is on: %d", rec.Code)
+	}
+	req := httptest.NewRequest("GET", "/api/v1/accounts", nil)
+	req.Header.Set("Authorization", "Bearer "+mcpToken)
+	rec := httptest.NewRecorder()
+	a.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the MCP token must not unlock the REST API: %d", rec.Code)
+	}
+}
