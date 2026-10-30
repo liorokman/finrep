@@ -55,6 +55,14 @@ type Skipped struct {
 	Reason string
 }
 
+// Rejected is a source row that could not be understood. Good rows of the
+// same file are still imported; rejected rows are listed so nothing is lost silently.
+type Rejected struct {
+	Row    int // 1-based row number in the file (the header is row 1)
+	Reason string
+	Raw    []string
+}
+
 // Parsed is the result of parsing one file.
 type Parsed struct {
 	Source     Source
@@ -62,6 +70,7 @@ type Parsed struct {
 	Last4      string // card number suffix found in the file, if any
 	Lines      []Line
 	Statements []Statement
+	Rejected   []Rejected
 	Warnings   []string
 }
 

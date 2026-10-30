@@ -26,6 +26,7 @@ type Preview struct {
 	New        int
 	Duplicates int
 	Skipped    []Skipped
+	Rejected   []Rejected
 	Statements []Statement
 	Warnings   []string
 }
@@ -36,6 +37,7 @@ type Result struct {
 	Inserted   int
 	Duplicates int
 	Skipped    []Skipped
+	Rejected   []Rejected
 	Warnings   []string
 }
 
@@ -80,7 +82,7 @@ func (im *Importer) Preview(ctx context.Context, accountID string, p *Parsed) (*
 	if err != nil {
 		return nil, err
 	}
-	out := &Preview{Skipped: pr.skipped, Statements: p.Statements, Warnings: p.Warnings}
+	out := &Preview{Skipped: pr.skipped, Rejected: p.Rejected, Statements: p.Statements, Warnings: p.Warnings}
 	for i := range p.Lines {
 		if pr.isSkipped(i) {
 			continue
@@ -106,7 +108,7 @@ func (im *Importer) Commit(ctx context.Context, accountID string, p *Parsed) (*R
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{BatchID: store.NewID(), Skipped: pr.skipped, Warnings: p.Warnings}
+	res := &Result{BatchID: store.NewID(), Skipped: pr.skipped, Rejected: p.Rejected, Warnings: p.Warnings}
 	err = im.st.WithTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO import_batches (id, source, filename, account_id) VALUES (?, ?, ?, ?)`,
 			res.BatchID, p.Source, p.Filename, accountID); err != nil {
