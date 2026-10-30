@@ -1,7 +1,7 @@
 {
   "services": {
     "finrep": {
-      "image": "ghcr.io/liorokman/finrep:0.1.0",
+      "image": "localhost:5000/finrep:0.1.0",
       "container_name": "finrep",
       "restart": "unless-stopped",
       "read_only": true,
@@ -14,7 +14,7 @@
         "FINREP_OIDC_REQUIRED_GROUP=FinRep_Users",
         "FINREP_SESSION_SECRET=<SESSION_SECRET>",
         "FINREP_MCP_TOKEN=<MCP_TOKEN>",
-        "FINREP_TRUSTED_PROXIES=172.16.0.0/12,10.0.0.0/8,192.168.0.0/16",
+        "FINREP_TRUSTED_PROXIES=172.16.0.0/12,10.0.0.0/8",
         "FINREP_LOG_LEVEL=info",
         "GOMEMLIMIT=200MiB",
         "TZ=Asia/Jerusalem"

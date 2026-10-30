@@ -9,10 +9,15 @@
 - Issuer: `https://auth.example.com/application/o/fin-rep/` (matches the discovery document).
 
 ## 2. The image
-Cosmos pulls the image, so build it and push it somewhere it can reach (change the tag in the JSON to match):
+Cosmos always pulls the image from a registry, even when it is already on the host. The first deployment used a
+throwaway registry on the Cosmos host itself (Docker allows plain HTTP to `localhost`), so nothing was published:
 
-    docker build -t ghcr.io/liorokman/finrep:0.1.0 .
-    docker push ghcr.io/liorokman/finrep:0.1.0
+    docker build -t finrep:0.1.0 .
+    docker save finrep:0.1.0 | ssh cosmos.example.com docker load
+    ssh cosmos.example.com 'docker run -d --name finrep-tmp-registry -p 127.0.0.1:5000:5000 registry:2 &&
+      docker tag finrep:0.1.0 localhost:5000/finrep:0.1.0 && docker push localhost:5000/finrep:0.1.0'
+
+The compose file uses `localhost:5000/finrep:0.1.0`. For a registry such as ghcr.io, push there and change the tag.
 
 ## 3. Import into Cosmos
 URLs -> Add -> Import compose -> `cosmos-compose.json`, replace the placeholders:
