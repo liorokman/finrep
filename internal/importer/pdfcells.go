@@ -74,6 +74,22 @@ func openPDF(data []byte) (*pdf.Reader, error) {
 			return r2, nil
 		}
 	}
+	// A file cut off in its last line has lost "startxref <offset> %%EOF". Rebuild that tail from the last xref
+	// section, on a copy that starts at the header.
+	if i := bytes.Index(data[:min(len(data), 4096)], []byte("%PDF-")); i >= 0 && !bytes.Contains(data, []byte("startxref")) {
+		body := data[i:]
+		if x := bytes.LastIndex(body, []byte("\nxref")); x >= 0 {
+			if t := bytes.LastIndex(body, []byte("\ntrailer")); t > x {
+				if e := bytes.LastIndex(body, []byte(">>")); e > t {
+					fixed := append([]byte(nil), body[:e+2]...)
+					fixed = append(fixed, fmt.Sprintf("\nstartxref\n%d\n%%%%EOF\n", x+1)...)
+					if r2, err2 := pdf.NewReader(bytes.NewReader(fixed), int64(len(fixed))); err2 == nil {
+						return r2, nil
+					}
+				}
+			}
+		}
+	}
 	return nil, fmt.Errorf("not a readable PDF: %w", err)
 }
 

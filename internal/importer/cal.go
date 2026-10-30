@@ -12,6 +12,8 @@ import (
 var (
 	calHeaderDate = regexp.MustCompile(`חיוב חודשי ל-?\s*(\d{2}/\d{2}/\d{2})`)
 	calCardNumber = regexp.MustCompile(`המסתיים ב-?\s*(\d{4})`)
+	// Some statements print the words and digits letter by letter; the digits then come out reversed.
+	calCardSpaced = regexp.MustCompile(`מ\s*ס\s*ת\s*י\s*י\s*ם\s*ב-?\s*(\d\s+\d\s+\d\s+\d)`)
 	calTotalRow   = regexp.MustCompile(`סה"כ לתאריך\s*(\d{2}/\d{2}/\d{2})`)
 )
 
@@ -45,6 +47,12 @@ func parseCalRows(rows []pdfRow, filename string, opt PDFOptions) (*Parsed, erro
 		if p.Last4 == "" {
 			if m := calCardNumber.FindStringSubmatch(text); m != nil {
 				p.Last4 = m[1]
+			} else if m := calCardSpaced.FindStringSubmatch(text); m != nil {
+				d := []rune(strings.Join(strings.Fields(m[1]), ""))
+				for i, j := 0, len(d)-1; i < j; i, j = i+1, j-1 {
+					d[i], d[j] = d[j], d[i]
+				}
+				p.Last4 = string(d)
 			}
 		}
 		if strings.Contains(text, "לחיוב עתידי") && !strings.Contains(text, "₪") {
