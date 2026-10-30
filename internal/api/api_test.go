@@ -431,15 +431,3 @@ func TestNewRejectsIncompleteDeps(t *testing.T) {
 		t.Error("auth on without sessions accepted")
 	}
 }
-
-func TestSnakeCase(t *testing.T) {
-	for in, want := range map[string]string{
-		"AccountID": "account_id", "NameHE": "name_he", "TxCount": "tx_count", "BankTxID": "bank_tx_id", "ID": "id",
-		"PercentUsed": "percent_used", "name": "name", "already_snake": "already_snake", "MinRate": "min_rate", "CSRF": "csrf",
-		"IsReviewed": "is_reviewed", "HasProposal": "has_proposal", "Q1": "q1",
-	} {
-		if got := snake(in); got != want {
-			t.Errorf("snake(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

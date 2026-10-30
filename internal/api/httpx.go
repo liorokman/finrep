@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +10,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/liorokman/finrep/internal/categorize"
+	"github.com/liorokman/finrep/internal/jsonx"
 	"github.com/liorokman/finrep/internal/ledger"
 )
 
@@ -78,7 +77,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // writeJSON sends v with its field names converted to snake_case.
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	raw, err := json.Marshal(v)
+	raw, err := jsonx.Marshal(v)
 	if err != nil {
 		slog.Error("encode response", "error", err)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -86,54 +85,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		w.Write([]byte(`{"error":"internal error"}`))
 		return
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var generic any
-	if err := dec.Decode(&generic); err == nil {
-		raw, _ = json.Marshal(snakeKeys(generic))
-	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	w.Write(raw)
 	w.Write([]byte("\n"))
-}
-
-func snakeKeys(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, val := range x {
-			out[snake(k)] = snakeKeys(val)
-		}
-		return out
-	case []any:
-		for i := range x {
-			x[i] = snakeKeys(x[i])
-		}
-		return x
-	}
-	return v
-}
-
-// snake converts GoFieldNames such as AccountID, NameHE and TxCount to account_id, name_he, tx_count.
-// Names that are already lower-case with underscores are left alone.
-func snake(s string) string {
-	if s == "" || strings.ToLower(s) == s {
-		return s
-	}
-	rs := []rune(s)
-	var b strings.Builder
-	for i, r := range rs {
-		if unicode.IsUpper(r) && i > 0 {
-			prev := rs[i-1]
-			nextLower := i+1 < len(rs) && unicode.IsLower(rs[i+1])
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) || (unicode.IsUpper(prev) && nextLower) {
-				b.WriteByte('_')
-			}
-		}
-		b.WriteRune(unicode.ToLower(r))
-	}
-	return b.String()
 }
 
 // readJSON decodes exactly one JSON object from a request, rejecting other content types, unknown
