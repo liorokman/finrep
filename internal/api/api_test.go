@@ -157,6 +157,9 @@ func TestAccountsLifecycleAndResponseShape(t *testing.T) {
 		"opening_balance_minor": -12345, "credit_limit_minor": 1500000,
 		"billing_rules": []map[string]any{{"scope": "LOCAL", "bill_day": 10, "cutoff_day": 10}},
 	}).want(201).json()
+	if card["created_at"] == "" || card["created_at"] == nil {
+		t.Fatalf("created_at missing: %v", card)
+	}
 	if card["name"] != "Cal 1001" || card["currency"] != "ILS" || card["type"] != "CREDIT_CARD" {
 		t.Fatalf("%v", card)
 	}

@@ -1,0 +1,64 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+
+	"github.com/liorokman/finrep/internal/api"
+	"github.com/liorokman/finrep/internal/authn"
+	"github.com/liorokman/finrep/internal/billing"
+	"github.com/liorokman/finrep/internal/categorize"
+	"github.com/liorokman/finrep/internal/conf"
+	"github.com/liorokman/finrep/internal/importer"
+	"github.com/liorokman/finrep/internal/ledger"
+	"github.com/liorokman/finrep/internal/reports"
+	"github.com/liorokman/finrep/internal/settings"
+	"github.com/liorokman/finrep/internal/store"
+)
+
+// app is the assembled application.
+type app struct {
+	handler    http.Handler
+	categorize *categorize.Service
+}
+
+// build wires the services together. With auth on it contacts the OIDC provider, so a wrong issuer
+// fails at startup rather than at the first login.
+func build(ctx context.Context, cfg *conf.Config, st *store.Store) (*app, error) {
+	led := ledger.New(st)
+	if n, err := categorize.SeedOnce(ctx, st, led); err != nil {
+		return nil, fmt.Errorf("seed categories: %w", err)
+	} else if n > 0 {
+		slog.Info("seeded starter categories", "count", n)
+	}
+	bill := billing.New(st, led)
+	cat := categorize.New(st, led, categorize.Options{})
+	if err := cat.Recover(ctx); err != nil {
+		return nil, fmt.Errorf("recover categorization runs: %w", err)
+	}
+	deps := api.Deps{
+		Config: cfg, Store: st, Ledger: led, Importer: importer.New(st, led), Categorize: cat, Billing: bill,
+		Reports: reports.New(st, led, bill), Settings: settings.New(st),
+	}
+	if cfg.AuthEnabled {
+		sessions, err := authn.NewSessions(cfg.SessionSecret)
+		if err != nil {
+			return nil, err
+		}
+		oidc, err := authn.NewOIDC(ctx, authn.OIDCConfig{
+			Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCSecret,
+			RedirectURL: cfg.OIDCRedirect, TrustedProxies: cfg.TrustedProxy,
+		}, sessions)
+		if err != nil {
+			return nil, err
+		}
+		deps.Sessions, deps.OIDC = sessions, oidc
+	}
+	srv, err := api.New(deps)
+	if err != nil {
+		return nil, err
+	}
+	return &app{handler: srv.Handler(), categorize: cat}, nil
+}

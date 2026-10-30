@@ -170,7 +170,12 @@ func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	v, err := s.accountView(r, a)
+	stored, err := s.d.Ledger.GetAccount(r.Context(), a.ID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	v, err := s.accountView(r, stored)
 	if err != nil {
 		fail(w, r, err)
 		return

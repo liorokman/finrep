@@ -166,7 +166,7 @@ Read-only tools: `list_accounts`, `get_account_summary`, `query_transactions`, `
 - Secrets (LLM key, session key, MCP token) live in env/config files excluded from git and Docker context; API never returns them.
 
 ## 11. Configuration and operations
-Flags with env fallbacks: `--port`, `--log-level`, `--mode web|mcp`, `--db-path`, `--auth on|off`, `--oidc-issuer`, `--oidc-client-id`, `--oidc-redirect`, `--session-secret`, `--mcp-token`, `--max-upload-mb`. Trusts `X-Forwarded-*` from a configured proxy list (Cosmos OS). Structured `slog` logging. Graceful shutdown. `/healthz`.
+Flags with env fallbacks: `--port`, `--log-level`, `--mode web|mcp`, `--db-path`, `--auth on|off`, `--oidc-issuer`, `--oidc-client-id`, `--oidc-redirect`, `--session-secret`, (`FINREP_OIDC_CLIENT_SECRET[_FILE]`, optional, env only), `--mcp-token`, `--max-upload-mb`. Trusts `X-Forwarded-*` from a configured proxy list (Cosmos OS). Structured `slog` logging. Graceful shutdown. `/healthz`.
 
 Build: `Taskfile.yaml` (`build`, `dev`, `test`, `lint`, `docker-build`). `Dockerfile` multi-stage, non-root user. `.dockerignore` and `.gitignore` exclude data, CSVs, PDFs, DB files and local config.
 

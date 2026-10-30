@@ -46,8 +46,9 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - `ledger_view` (SQL view) implementing §3; ten reports as functions over it; shared filter.
 - Acceptance: reconciliation test — every report's total ties to the seeded ledger; transfers/settlements never double count.
 
-## Phase 8 — Auth and API hardening
-- OIDC with real ID-token validation (allow-list is product Phase 2); signed sliding sessions; CSRF header; body/upload caps; settings allow-list with write-only secrets; trusted-proxy handling; `/healthz`.
+## Phase 8 — Auth and API hardening  *(done: `internal/authn`, `internal/api`, `internal/settings`, `cmd/finrep`)*
+- OIDC with real ID-token validation through go-oidc (issuer, audience, signature, expiry, nonce; PKCE and state handled here; allow-list is product Phase 2); signed sliding sessions with an absolute cap; same-origin check plus a per-session CSRF header; JSON-only bodies with size and unknown-field limits; upload caps; staged uploads bounded in count and age; settings allow-list with write-only secrets; trusted-proxy handling; `/healthz`.
+- MCP routes are mounted by Phase 9 (they authenticate with the static bearer token, not a session).
 - Acceptance: fake-OIDC integration test; forged-cookie and CSRF tests.
 
 ## Phase 9 — MCP

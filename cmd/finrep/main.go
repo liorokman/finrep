@@ -12,9 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/liorokman/finrep/internal/categorize"
 	"github.com/liorokman/finrep/internal/conf"
-	"github.com/liorokman/finrep/internal/ledger"
 	"github.com/liorokman/finrep/internal/store"
 )
 
@@ -42,32 +40,22 @@ func run() error {
 	}
 	defer st.Close()
 
-	led := ledger.New(st)
-	if n, err := categorize.SeedOnce(ctx, st, led); err != nil {
-		return fmt.Errorf("seed categories: %w", err)
-	} else if n > 0 {
-		slog.Info("seeded starter categories", "count", n)
-	}
-
 	if cfg.Mode == "mcp" {
 		return errors.New("mcp stdio mode is not implemented yet")
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		pctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := st.PingContext(pctx); err != nil {
-			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		fmt.Fprintln(w, "ok")
-	})
-
+	a, err := build(ctx, cfg, st)
+	if err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           mux,
+		Handler:           a.handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       2 * time.Minute, // uploads are capped by --max-upload-mb
+		WriteTimeout:      2 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -78,6 +66,7 @@ func run() error {
 		return err
 	case <-ctx.Done():
 		slog.Info("shutting down")
+		a.categorize.Cancel() // batches already applied stay; the run is marked canceled
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(sctx)
