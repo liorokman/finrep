@@ -51,6 +51,23 @@ func isoFrom4(c cell) (string, bool) {
 	return isoDate(m[3], m[2], m[1])
 }
 
+// embeddedDate finds a dd/mm/yyyy date at the start or end of a cell that also holds other text (a date
+// printed flush against the merchant name comes out of the PDF as one cell) and returns it with the rest.
+var embeddedDate = regexp.MustCompile(`^\s*(\d{2})/(\d{2})/(\d{4})\s*(.*?)\s*$|^\s*(.*?)\s*(\d{2})/(\d{2})/(\d{4})\s*$`)
+
+func splitDate(c cell) (iso, rest string, ok bool) {
+	m := embeddedDate.FindStringSubmatch(c.Text)
+	if m == nil {
+		return "", "", false
+	}
+	if m[1] != "" {
+		iso, ok = isoDate(m[3], m[2], m[1])
+		return iso, m[4], ok
+	}
+	iso, ok = isoDate(m[8], m[7], m[6])
+	return iso, m[5], ok
+}
+
 func isoFrom2(s string) (string, bool) {
 	m := date2Cell.FindStringSubmatch(strings.TrimSpace(s))
 	if m == nil {

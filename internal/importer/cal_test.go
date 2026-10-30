@@ -188,3 +188,22 @@ func TestRealCalPDF(t *testing.T) {
 		t.Fatalf("second import must add nothing: %+v %v", r2, err)
 	}
 }
+
+func TestSplitDateFromAMixedCell(t *testing.T) {
+	for in, want := range map[string][2]string{
+		"21/06/2024":              {"2024-06-21", ""},
+		" 21/06/2024וניליה דרורים": {"2024-06-21", "וניליה דרורים"},
+		"וניליה דרורים 21/06/2024": {"2024-06-21", "וניליה דרורים"},
+		"AMAZON 05/01/2026":       {"2026-01-05", "AMAZON"},
+	} {
+		iso, rest, ok := splitDate(cell{Text: in})
+		if !ok || iso != want[0] || rest != want[1] {
+			t.Errorf("%q: got %q %q %v", in, iso, rest, ok)
+		}
+	}
+	for _, in := range []string{"no date here", "31/13/2024", "12/2024"} {
+		if _, _, ok := splitDate(cell{Text: in}); ok {
+			t.Errorf("%q accepted", in)
+		}
+	}
+}

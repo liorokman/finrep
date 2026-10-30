@@ -122,6 +122,20 @@ func calLine(r pdfRow, future bool, opt PDFOptions) (Line, bool, error) {
 			texts = append(texts, c)
 		}
 	}
+	if date == "" && len(amounts) > 0 {
+		// A date printed flush against the merchant is a single cell: split it.
+		for i, c := range texts {
+			if d, rest, ok := splitDate(c); ok {
+				date, dateCell = d, c
+				if rest == "" {
+					texts = append(texts[:i:i], texts[i+1:]...)
+				} else {
+					texts[i] = cell{X0: c.X0, X1: c.X1, Text: rest}
+				}
+				break
+			}
+		}
+	}
 	if date == "" || len(amounts) == 0 {
 		return Line{}, false, nil
 	}
