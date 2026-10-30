@@ -504,7 +504,7 @@ func TestSeed(t *testing.T) {
 			t.Fatalf("%+v", c)
 		}
 	}
-	if _, err := e.l.FindCategoryByName(ctx, "Wife's Cards"); err != nil {
+	if _, err := e.l.FindCategoryByName(ctx, "Credit cards"); err != nil {
 		t.Fatal("missing the category for cards with no statements here")
 	}
 	if types[ledger.Expense] == 0 || types[ledger.Income] == 0 || types[ledger.Transfer] == 0 {

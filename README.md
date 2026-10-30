@@ -76,7 +76,7 @@ session ends (24 hours idle, 30 days at most).
 4. **Accounts → Match bank debits to bills.** The bank debit that paid a card bill is linked to it, which keeps
    card payments out of your spending totals (the purchases already count). Add the words that mark a card
    payment in your bank (for example `ישראכרט`) under **Settings → Card payments in the bank**. A card whose
-   statements you do not import can be handled by putting its payments in a category such as "Wife's Cards".
+   statements you do not import can be handled by putting its payments in a category such as "Credit cards".
 
 ## Concepts worth knowing
 
