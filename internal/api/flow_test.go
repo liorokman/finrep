@@ -361,3 +361,55 @@ func TestStagedUploadsExpire(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 	g.call("POST", "/api/v1/imports/staged/"+st["stage_id"].(string)+"/commit", map[string]any{"account_id": bank}).want(404)
 }
+
+func TestCategorizeWithADecisionModel(t *testing.T) {
+	g := newRig(t, false)
+	acc := g.account("Leumi", "BANK")
+	shop := g.call("POST", "/api/v1/categories", map[string]any{"name_en": "Shopping", "name_he": "קניות", "type": "EXPENSE"}).want(201).json()["id"].(string)
+	g.call("POST", "/api/v1/categories", map[string]any{"name_en": "Fuel", "type": "EXPENSE"}).want(201)
+	for i, p := range []string{"ZARA ISRAEL", "ZARA ISRAEL", "פז - תחנת דלק"} {
+		g.call("POST", "/api/v1/transactions", map[string]any{"account_id": acc, "date": fmt.Sprintf("2026-02-0%d", i+1), "amount_minor": -1000, "payee": p}).want(201)
+	}
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" { // the generator's connection probe
+			w.Write([]byte(`{"choices":[{"message":{"content":"{\"ok\":true}"}}]}`))
+			return
+		}
+		if r.URL.Path != "/v1/systemone" {
+			t.Errorf("unexpected call to %s", r.URL.Path)
+		}
+		var req struct {
+			State     string
+			Questions map[string]struct{ Criteria map[string]string }
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		asked = append(asked, req.State)
+		crit := req.Questions["choice"].Criteria
+		key := ""
+		for k, d := range crit {
+			if strings.HasPrefix(d, "Shopping") && strings.Contains(req.State, "ZARA") || strings.HasPrefix(d, "Fuel") && strings.Contains(req.State, "דלק") {
+				key = k
+			}
+		}
+		fmt.Fprintf(w, `{"answers":{"choice":{"choice":%q,"probabilities":{%q:0.93}}}}`, key, key)
+	}))
+	defer srv.Close()
+	g.call("PUT", "/api/v1/settings", map[string]any{"values": map[string]string{"llm_base_url": srv.URL + "/v1", "classifier_model": "nimble", "generator_model": "gen", "classifier_api": "decision"}}).want(200)
+	test := g.call("POST", "/api/v1/settings/test-llm", map[string]any{}).want(200).json()
+	if test["classifier"].(map[string]any)["ok"] != false { // the fake answers an unknown key for the probe: reported, not crashed
+		t.Logf("probe result: %v", test["classifier"])
+	}
+	asked = nil
+	start := g.call("POST", "/api/v1/categorization/runs", map[string]any{}).want(202).json()
+	g.srv.d.Categorize.Wait(start["id"].(string))
+	if len(asked) != 2 { // two distinct payees, asked once each
+		t.Fatalf("decision model asked %d times: %v", len(asked), asked)
+	}
+	if n := g.call("GET", "/api/v1/transactions?category_id="+shop, nil).want(200).json()["total"].(float64); n != 2 {
+		t.Fatalf("shopping: %v", n)
+	}
+	if n := g.call("GET", "/api/v1/transactions?category_id=uncategorized", nil).want(200).json()["total"].(float64); n != 0 {
+		t.Fatalf("%v left uncategorized", n)
+	}
+}

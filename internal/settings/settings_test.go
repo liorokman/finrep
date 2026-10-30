@@ -123,3 +123,21 @@ func TestLLMDefaultsAndNormalization(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClassifierAPISetting(t *testing.T) {
+	s := newStore(t)
+	if l, _ := s.LLM(ctx); l.ClassifierAPI != "chat" {
+		t.Fatalf("default %q", l.ClassifierAPI)
+	}
+	if err := s.Update(ctx, map[string]string{ClassifierAPI: "decision"}); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := s.LLM(ctx); l.ClassifierAPI != "decision" {
+		t.Fatalf("%q", l.ClassifierAPI)
+	}
+	for _, bad := range []string{"gpt", "Decision ", "systemone"} {
+		if err := s.Update(ctx, map[string]string{ClassifierAPI: bad}); !errors.Is(err, ledger.ErrInvalid) {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+}

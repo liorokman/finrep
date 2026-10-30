@@ -21,6 +21,7 @@ const (
 	LLMBaseURL      = "llm_base_url"
 	LLMAPIKey       = "llm_api_key"
 	ClassifierModel = "classifier_model"
+	ClassifierAPI   = "classifier_api" // "chat" (default) or "decision" (LocalAI /v1/systemone)
 	GeneratorModel  = "generator_model"
 	Threshold       = "categorization_threshold"
 	BatchSize       = "categorization_batch_size"
@@ -56,6 +57,18 @@ func httpURL(v string) (string, error) {
 	return v, nil
 }
 
+func oneOf(opts ...string) func(string) (string, error) {
+	return func(v string) (string, error) {
+		v = strings.TrimSpace(v)
+		for _, o := range opts {
+			if v == o {
+				return v, nil
+			}
+		}
+		return "", invalid("must be one of: %s", strings.Join(opts, ", "))
+	}
+}
+
 func floatRange(lo, hi float64) func(string) (string, error) {
 	return func(v string) (string, error) {
 		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
@@ -79,6 +92,7 @@ func intRange(lo, hi int) func(string) (string, error) {
 var defs = map[string]def{
 	LLMBaseURL:      {label: "LLM endpoint (OpenAI-compatible base URL)", validate: httpURL},
 	LLMAPIKey:       {label: "LLM API key", secret: true, validate: text(500)},
+	ClassifierAPI:   {label: "How the decision model is called", validate: oneOf("chat", "decision")},
 	ClassifierModel: {label: "Decision (classifier) model", validate: text(200)},
 	GeneratorModel:  {label: "Generator model", validate: text(200)},
 	Threshold:       {label: "Confidence needed to use an existing category", validate: floatRange(0.5, 1)},
@@ -181,6 +195,7 @@ func (s *Store) Get(ctx context.Context, key string) (string, bool, error) {
 // LLM is the model configuration for categorization.
 type LLM struct {
 	BaseURL, APIKey, Classifier, Generator string
+	ClassifierAPI                          string // "chat" or "decision"
 	Threshold                              float64
 	BatchSize                              int
 }
@@ -190,13 +205,18 @@ func (l LLM) Configured() bool { return l.BaseURL != "" && l.Classifier != "" &&
 
 // LLM loads the model settings, applying defaults for the optional ones.
 func (s *Store) LLM(ctx context.Context) (LLM, error) {
-	l := LLM{Threshold: 0.75, BatchSize: 20}
+	l := LLM{Threshold: 0.75, BatchSize: 20, ClassifierAPI: "chat"}
 	for key, dst := range map[string]*string{LLMBaseURL: &l.BaseURL, LLMAPIKey: &l.APIKey, ClassifierModel: &l.Classifier, GeneratorModel: &l.Generator} {
 		v, _, err := s.Get(ctx, key)
 		if err != nil {
 			return l, err
 		}
 		*dst = v
+	}
+	if v, ok, err := s.Get(ctx, ClassifierAPI); err != nil {
+		return l, err
+	} else if ok && v != "" {
+		l.ClassifierAPI = v
 	}
 	if v, ok, err := s.Get(ctx, Threshold); err != nil {
 		return l, err

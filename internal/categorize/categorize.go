@@ -29,9 +29,17 @@ type Chatter interface {
 	Chat(ctx context.Context, model, system, user string) (string, error)
 }
 
+// Decider is a decision model: it picks one option for a text and says how probable that pick is.
+type Decider interface {
+	Choose(ctx context.Context, model, state, instructions string, criteria map[string]string) (key string, probability float64, err error)
+}
+
 // Options configure a Service. Zero values get sensible defaults.
 type Options struct {
-	Classifier, Generator           Chatter
+	Classifier, Generator Chatter
+	// Decider, when set, replaces Classifier: a decision model (LocalAI /v1/systemone) scores every
+	// existing category for each payee and returns the probability of its pick, one request per payee.
+	Decider                         Decider
 	ClassifierModel, GeneratorModel string
 	Threshold                       float64       // default 0.75
 	BatchSize                       int           // distinct payees per request; default 20
@@ -358,15 +366,22 @@ func (s *worker) ask(ctx context.Context, c Chatter, model, system string, p pro
 	if err != nil {
 		return err
 	}
+	return s.retry(ctx, model, func() error {
+		reply, err := c.Chat(ctx, model, system, string(body))
+		if err != nil {
+			return err
+		}
+		return parseJSON(reply, out)
+	})
+}
+
+// retry runs fn up to Attempts times with a growing delay, stopping early if the run is canceled.
+func (s *worker) retry(ctx context.Context, model string, fn func() error) error {
 	var last error
 	for attempt := 1; attempt <= s.o.Attempts; attempt++ {
-		reply, err := c.Chat(ctx, model, system, string(body))
-		if err == nil {
-			if err = parseJSON(reply, out); err == nil {
-				return nil
-			}
+		if last = fn(); last == nil {
+			return nil
 		}
-		last = err
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -379,6 +394,44 @@ func (s *worker) ask(ctx context.Context, c Chatter, model, system string, p pro
 		}
 	}
 	return fmt.Errorf("model %q: %w", model, last)
+}
+
+const decisionInstructions = "Which category does this bank or credit-card transaction belong to? Judge by the merchant or payee."
+
+// decide asks the decision model about each payee in turn. Options are keyed c0, c1, … so the model never
+// sees internal ids, and each is described by both of its names.
+func (s *worker) decide(ctx context.Context, groups []*group, cats []catView) ([]classification, error) {
+	criteria := make(map[string]string, len(cats))
+	byKey := make(map[string]string, len(cats))
+	for i, c := range cats {
+		key := "c" + strconv.Itoa(i)
+		desc := c.EN
+		if c.HE != "" && c.HE != c.EN {
+			desc += " (" + c.HE + ")"
+		}
+		criteria[key], byKey[key] = desc, c.ID
+	}
+	var out []classification
+	for i, g := range groups {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		state := g.payee
+		if !strings.HasPrefix(g.amount, "-") {
+			state = "Money received: " + g.payee
+		}
+		var key string
+		var p float64
+		err := s.retry(ctx, s.o.ClassifierModel, func() (err error) {
+			key, p, err = s.o.Decider.Choose(ctx, s.o.ClassifierModel, state, decisionInstructions, criteria)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, classification{ID: flexID(strconv.Itoa(i)), CategoryID: byKey[key], Confidence: p})
+	}
+	return out, nil
 }
 
 type decision struct {
@@ -422,7 +475,13 @@ func (s *worker) batch(ctx context.Context, runID string, groups []*group) (int,
 	var cls struct {
 		Results []classification `json:"results"`
 	}
-	if len(views) > 0 {
+	if len(views) > 0 && s.o.Decider != nil {
+		res, err := s.decide(ctx, groups, views)
+		if err != nil {
+			return 0, err
+		}
+		cls.Results = res
+	} else if len(views) > 0 {
 		if err := s.ask(ctx, s.o.Classifier, s.o.ClassifierModel, classifierSystem, prompt{views, items(groups, all)}, &cls); err != nil {
 			return 0, err
 		}

@@ -627,3 +627,108 @@ type chatFunc func(ctx context.Context, model, system, user string) (string, err
 func (f chatFunc) Chat(ctx context.Context, model, system, user string) (string, error) {
 	return f(ctx, model, system, user)
 }
+
+// fakeDecider scripts a decision model. pick returns the category NAME it would choose and a probability.
+type fakeDecider struct {
+	mu       sync.Mutex
+	states   []string
+	criteria map[string]string
+	pick     func(state string) (name string, p float64)
+	fail     int // fail this many calls first
+}
+
+func (f *fakeDecider) Choose(_ context.Context, model, state, instr string, criteria map[string]string) (string, float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.states = append(f.states, state)
+	f.criteria = criteria
+	if f.fail > 0 {
+		f.fail--
+		return "", 0, errors.New("model busy")
+	}
+	name, p := f.pick(state)
+	for key, desc := range criteria {
+		if strings.HasPrefix(desc, name) {
+			return key, p, nil
+		}
+	}
+	return "", 0, fmt.Errorf("no option for %q", name)
+}
+
+func TestDecisionModelPathUsesProbabilityAgainstTheThreshold(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	e.cat("Fuel", ledger.Expense)
+	hi := e.tx("2024-03-01", -1000, "AT-THRESHOLD")
+	lo := e.tx("2024-03-02", -1000, "JUST-BELOW")
+	d := &fakeDecider{pick: func(state string) (string, float64) {
+		if strings.Contains(state, "AT-THRESHOLD") {
+			return "Food", 0.75
+		}
+		return "Food", 0.74
+	}}
+	ge := generate(func(string) (string, string, string) { return "Snacks", "חטיפים", "EXPENSE" })
+	r := e.run(e.svc(nil, ge, func(o *Options) { o.Decider = d }))
+	if r.Status != "DONE" {
+		t.Fatalf("%+v", r)
+	}
+	a := e.get(hi.ID)
+	if *a.CategoryID != food.ID || *a.LLMConfidence != 0.75 {
+		t.Fatalf("at threshold: %+v", a)
+	}
+	if b := e.get(lo.ID); b.CategoryNameEN != "Snacks" {
+		t.Fatalf("below the threshold must go to the generator: %+v", b)
+	}
+	if ge.count() != 1 {
+		t.Fatalf("generator calls = %d", ge.count())
+	}
+}
+
+func TestDecisionModelSeesBothNamesOncePerPayeeAndKnowsIncome(t *testing.T) {
+	e := newEnv(t)
+	e.cat("Food", ledger.Expense)
+	for i := 1; i <= 4; i++ {
+		e.tx(fmt.Sprintf("2024-03-%02d", i), -1000, "שופרסל דיל")
+	}
+	e.tx("2024-03-09", 5000, "שופרסל דיל") // a refund: a different direction, asked separately
+	d := &fakeDecider{pick: func(string) (string, float64) { return "Food", 0.95 }}
+	r := e.run(e.svc(nil, nil, func(o *Options) { o.Decider = d }))
+	if r.Total != 5 || len(d.states) != 2 {
+		t.Fatalf("asked %d times for %d transactions: %v", len(d.states), r.Total, d.states)
+	}
+	var credit bool
+	for _, s := range d.states {
+		credit = credit || s == "Money received: שופרסל דיל"
+	}
+	if !credit {
+		t.Fatalf("a credit must be marked as money received: %v", d.states)
+	}
+	found := false
+	for key, desc := range d.criteria {
+		if desc == "Food (Food-he)" && strings.HasPrefix(key, "c") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("options must be keyed c0.. and described by both names: %v", d.criteria)
+	}
+}
+
+func TestDecisionModelRetriesThenFails(t *testing.T) {
+	e := newEnv(t)
+	e.cat("Food", ledger.Expense)
+	x := e.tx("2024-03-01", -1000, "A")
+	flaky := &fakeDecider{fail: 2, pick: func(string) (string, float64) { return "Food", 0.9 }}
+	if r := e.run(e.svc(nil, nil, func(o *Options) { o.Decider = flaky })); r.Status != "DONE" || e.get(x.ID).CategoryID == nil {
+		t.Fatalf("retries should have recovered: %+v", r)
+	}
+	y := e.tx("2024-03-02", -1000, "B")
+	dead := &fakeDecider{fail: 100, pick: func(string) (string, float64) { return "Food", 0.9 }}
+	r := e.run(e.svc(nil, nil, func(o *Options) { o.Decider = dead }))
+	if r.Status != "FAILED" || !strings.Contains(r.Error, "model busy") {
+		t.Fatalf("%+v", r)
+	}
+	if got := e.get(y.ID); got.CategoryID != nil {
+		t.Fatal("a failed run must leave transactions untouched")
+	}
+}

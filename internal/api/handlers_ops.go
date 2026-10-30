@@ -27,10 +27,16 @@ func (s *Server) startCategorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := llm.New(cfg.BaseURL, cfg.APIKey)
-	s.d.Categorize.Configure(categorize.Options{
-		Classifier: c, Generator: c, ClassifierModel: cfg.Classifier, GeneratorModel: cfg.Generator,
+	opts := categorize.Options{
+		Generator: c, ClassifierModel: cfg.Classifier, GeneratorModel: cfg.Generator,
 		Threshold: cfg.Threshold, BatchSize: cfg.BatchSize, CardPaymentHints: s.d.Billing.Hints,
-	})
+	}
+	if cfg.ClassifierAPI == "decision" {
+		opts.Decider = c
+	} else {
+		opts.Classifier = c
+	}
+	s.d.Categorize.Configure(opts)
 	id, err := s.d.Categorize.Start(r.Context())
 	if errors.Is(err, categorize.ErrNothingToDo) {
 		writeJSON(w, http.StatusOK, map[string]any{"started": false, "reason": err.Error()})
@@ -394,7 +400,12 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	c := llm.New(cfg.BaseURL, cfg.APIKey)
 	result := map[string]any{}
 	for name, model := range map[string]string{"classifier": cfg.Classifier, "generator": cfg.Generator} {
-		_, err := c.Chat(ctx, model, `Reply with the JSON object {"ok":true}.`, "ping")
+		var err error
+		if name == "classifier" && cfg.ClassifierAPI == "decision" {
+			_, _, err = c.Choose(ctx, model, "Netflix monthly payment", "Which category fits?", map[string]string{"c0": "Subscriptions", "c1": "Groceries"})
+		} else {
+			_, err = c.Chat(ctx, model, `Reply with the JSON object {"ok":true}.`, "ping")
+		}
 		if err != nil {
 			result[name] = map[string]any{"ok": false, "error": truncate(err.Error(), 300)}
 		} else {

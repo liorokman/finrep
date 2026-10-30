@@ -16,9 +16,10 @@ function modelCard(items) {
   const vals = {};
   const inp = (key, label, extra = {}) => { const it = by[key]; return h('div', { class: 'field' }, h('label', null, label), h('input', { class: 'input', autocomplete: 'off', value: it.secret ? '' : it.value, placeholder: it.secret ? (it.is_set ? 'Saved. Type to replace.' : '') : (extra.placeholder || ''), type: it.secret ? 'password' : 'text', oninput: (e) => { vals[key] = e.target.value; }, ...extra })); };
   const result = h('div', { 'aria-live': 'polite' });
-  return section('Categorization model', 'An OpenAI-compatible endpoint, such as LocalAI. The decision model picks an existing category; the generator invents a new one only when none fits well enough.',
+  return section('Categorization model', 'An OpenAI-compatible endpoint, such as LocalAI. The decision model picks an existing category and says how sure it is; the generator invents a new one only when none fits well enough. A LocalAI decision model scores every category directly, which is faster and gives a real probability.',
     h('form', { class: 'stack', onsubmit: async (e) => { e.preventDefault(); try { await api.put('/api/v1/settings', { values: vals }); toast('Saved'); } catch (err) { toast(err.message); } } },
       inp('llm_base_url', 'Endpoint URL', { placeholder: 'http://localai:8080/v1' }), inp('llm_api_key', 'API key'),
+      selectField('The decision model is a…', [{ value: 'chat', label: 'Chat model (asked for a JSON answer)' }, { value: 'decision', label: 'LocalAI decision model (/v1/systemone), recommended' }], (by.classifier_api && by.classifier_api.value) || 'chat', (v) => { vals.classifier_api = v; }),
       h('div', { class: 'row wrap', style: { alignItems: 'flex-start' } }, h('div', { class: 'grow' }, inp('classifier_model', 'Decision model')), h('div', { class: 'grow' }, inp('generator_model', 'Generator model'))),
       h('div', { class: 'row wrap', style: { alignItems: 'flex-start' } }, h('div', { class: 'grow' }, inp('categorization_threshold', 'Confidence needed (0.5 to 1)', { placeholder: '0.75' })), h('div', { class: 'grow' }, inp('categorization_batch_size', 'Payees per request', { placeholder: '20' }))),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'Save'),
