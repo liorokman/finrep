@@ -1,6 +1,7 @@
 package money
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -123,5 +124,25 @@ func TestZeroDecimalAndExtraCurrencies(t *testing.T) {
 		if _, err := ParseCurrency(c); err != nil {
 			t.Errorf("%s should be supported: %v", c, err)
 		}
+	}
+}
+
+func TestMoneyJSON(t *testing.T) {
+	b, err := json.Marshal(New(-123456, "ILS"))
+	if err != nil || string(b) != `{"minor":-123456,"currency":"ILS","display":"-1234.56"}` {
+		t.Fatalf("%s %v", b, err)
+	}
+	var m Money
+	if err := json.Unmarshal([]byte(`{"minor":500,"currency":"usd","display":"ignored"}`), &m); err != nil || m != New(500, "USD") {
+		t.Fatalf("%v %v", m, err)
+	}
+	for _, bad := range []string{`{"currency":"ILS"}`, `{"minor":1,"currency":"XXX9"}`, `{"minor":1}`, `"5"`} {
+		if err := json.Unmarshal([]byte(bad), &m); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	var wrap struct{ A Money }
+	if err := json.Unmarshal([]byte(`{"A":{"minor":7,"currency":"JPY"}}`), &wrap); err != nil || wrap.A.Minor() != 7 {
+		t.Fatal(err)
 	}
 }

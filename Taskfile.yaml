@@ -41,7 +41,7 @@ tasks:
     desc: Format check and vet
     cmds:
       # Only the v2 packages are checked; the legacy code is deleted as it is replaced.
-      - test -z "$(gofmt -l cmd/finrep internal/money internal/store internal/conf internal/ledger internal/importer internal/llm internal/categorize internal/billing internal/reports)"
+      - test -z "$(gofmt -l cmd/finrep internal/money internal/store internal/conf internal/ledger internal/importer internal/llm internal/categorize internal/billing internal/reports internal/settings)"
       - go vet ./...
 
   run-mcp:

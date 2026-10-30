@@ -566,3 +566,64 @@ func TestCardPaymentLinesAreLeftToTheUser(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigureDoesNotAffectRunInProgress(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	e.tx("2024-03-01", -1000, "A")
+	e.tx("2024-03-02", -1000, "B")
+	started, release := make(chan struct{}), make(chan struct{})
+	var models []string
+	var mu sync.Mutex
+	chat := chatFunc(func(_ context.Context, model, _, user string) (string, error) {
+		mu.Lock()
+		models = append(models, model)
+		mu.Unlock()
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		var p prompt
+		json.Unmarshal([]byte(user), &p)
+		var rs []string
+		for _, it := range p.Items {
+			rs = append(rs, fmt.Sprintf(`{"id":"%s","category_id":"%s","confidence":0.9}`, it.ID, food.ID))
+		}
+		return `{"results":[` + strings.Join(rs, ",") + `]}`, nil
+	})
+	s := e.svc(chat, nil, func(o *Options) { o.BatchSize = 1 })
+	id, err := s.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	s.Configure(Options{Classifier: chat, ClassifierModel: "NEW", Generator: chat, GeneratorModel: "NEW"})
+	close(release)
+	s.Wait(id)
+	for _, m := range models {
+		if m != "decide" {
+			t.Fatalf("running run switched models: %v", models)
+		}
+	}
+	if r, _ := s.GetRun(ctx, id); r.ClassifierModel != "decide" || r.Status != "DONE" {
+		t.Fatalf("%+v", r)
+	}
+	// The next run uses the new options.
+	e.tx("2024-03-03", -1000, "C")
+	models = nil
+	id2, err := s.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Wait(id2)
+	if len(models) == 0 || models[0] != "NEW" {
+		t.Fatalf("new options not used: %v", models)
+	}
+}
+
+type chatFunc func(ctx context.Context, model, system, user string) (string, error)
+
+func (f chatFunc) Chat(ctx context.Context, model, system, user string) (string, error) {
+	return f(ctx, model, system, user)
+}

@@ -52,6 +52,13 @@ type Service struct {
 	active *activeRun
 }
 
+// worker runs one categorization run with the options as they were when it started, so a settings
+// change never affects a run in progress.
+type worker struct {
+	*Service
+	o Options
+}
+
 type activeRun struct {
 	id     string
 	cancel context.CancelFunc
@@ -59,6 +66,17 @@ type activeRun struct {
 }
 
 func New(st *store.Store, l *ledger.Ledger, o Options) *Service {
+	return &Service{l: l, st: st, o: o.withDefaults()}
+}
+
+// Configure replaces the options used by runs that start after this call.
+func (s *Service) Configure(o Options) {
+	s.mu.Lock()
+	s.o = o.withDefaults()
+	s.mu.Unlock()
+}
+
+func (o Options) withDefaults() Options {
 	if o.Threshold <= 0 {
 		o.Threshold = 0.75
 	}
@@ -71,7 +89,7 @@ func New(st *store.Store, l *ledger.Ledger, o Options) *Service {
 	if o.Backoff == 0 {
 		o.Backoff = 2 * time.Second
 	}
-	return &Service{l: l, st: st, o: o}
+	return o
 }
 
 // Run is a categorization run's record.
@@ -105,7 +123,7 @@ type group struct {
 	ids      []string
 }
 
-func (s *Service) pending(ctx context.Context) ([]*group, int, error) {
+func (s *worker) pending(ctx context.Context) ([]*group, int, error) {
 	var hints []string
 	if s.o.CardPaymentHints != nil {
 		var err error
@@ -172,7 +190,8 @@ func (s *Service) Start(ctx context.Context) (string, error) {
 	if s.active != nil {
 		return "", ErrBusy
 	}
-	groups, total, err := s.pending(ctx)
+	w := &worker{s, s.o}
+	groups, total, err := w.pending(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +207,7 @@ func (s *Service) Start(ctx context.Context) (string, error) {
 	a := &activeRun{id: id, cancel: cancel, done: make(chan struct{})}
 	s.active = a
 	go func() {
-		s.execute(runCtx, id, groups)
+		w.execute(runCtx, id, groups)
 		cancel()
 		s.mu.Lock()
 		s.active = nil
@@ -218,7 +237,7 @@ func (s *Service) Wait(id string) {
 	}
 }
 
-func (s *Service) execute(ctx context.Context, runID string, groups []*group) {
+func (s *worker) execute(ctx context.Context, runID string, groups []*group) {
 	status, runErr := "DONE", ""
 	processed := 0
 	for start := 0; start < len(groups); start += s.o.BatchSize {
@@ -244,13 +263,13 @@ func (s *Service) execute(ctx context.Context, runID string, groups []*group) {
 }
 
 // exec runs bookkeeping statements that must not be skipped because the run was canceled.
-func (s *Service) exec(q string, args ...any) {
+func (s *worker) exec(q string, args ...any) {
 	_, _ = s.st.ExecContext(context.Background(), q, args...)
 }
 
 // inheritCoverage gives each employer-coverage line the category of the purchase it covers, so a
 // category's gross and out-of-pocket totals agree.
-func (s *Service) inheritCoverage(runID string) {
+func (s *worker) inheritCoverage(runID string) {
 	s.exec(`UPDATE transactions SET
 			category_id = (SELECT p.category_id FROM transactions p WHERE p.id = transactions.covers_transaction_id),
 			categorized_by = (SELECT p.categorized_by FROM transactions p WHERE p.id = transactions.covers_transaction_id),
@@ -334,7 +353,7 @@ func parseJSON(reply string, v any) error {
 }
 
 // ask calls a model, retrying transport and parse failures with a growing delay.
-func (s *Service) ask(ctx context.Context, c Chatter, model, system string, p prompt, out any) error {
+func (s *worker) ask(ctx context.Context, c Chatter, model, system string, p prompt, out any) error {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -369,7 +388,7 @@ type decision struct {
 }
 
 // batch categorizes one slice of groups and returns how many transactions it covered.
-func (s *Service) batch(ctx context.Context, runID string, groups []*group) (int, error) {
+func (s *worker) batch(ctx context.Context, runID string, groups []*group) (int, error) {
 	wctx := context.WithoutCancel(ctx) // for writes that follow a model reply
 	cats, err := s.l.ListCategories(ctx)
 	if err != nil {
@@ -482,7 +501,7 @@ func (s *Service) batch(ctx context.Context, runID string, groups []*group) (int
 
 // resolveGenerated returns the category for a generator proposal, reusing an existing one with the
 // same English name (case-insensitive) rather than creating a duplicate.
-func (s *Service) resolveGenerated(ctx context.Context, runID string, r generation, g *group, created map[string]string) (string, error) {
+func (s *worker) resolveGenerated(ctx context.Context, runID string, r generation, g *group, created map[string]string) (string, error) {
 	en, he := strings.TrimSpace(r.NameEN), strings.TrimSpace(r.NameHE)
 	if en == "" {
 		en = he

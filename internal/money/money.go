@@ -3,6 +3,7 @@
 package money
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -226,3 +227,33 @@ func FromFloat(f float64, cur Currency) Money {
 
 // Digits is the number of decimal places of a currency's minor unit (2 for ILS, 0 for JPY).
 func Digits(cur Currency) int { return digitsFor(cur) }
+
+// MarshalJSON renders {"minor":123,"currency":"ILS","display":"1.23"}. The integer is authoritative;
+// display is a convenience for clients.
+func (m Money) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Minor    int64    `json:"minor"`
+		Currency Currency `json:"currency"`
+		Display  string   `json:"display"`
+	}{m.minor, m.cur, Format(m.minor, m.cur)})
+}
+
+// UnmarshalJSON reads {"minor":..., "currency":...}; display is ignored.
+func (m *Money) UnmarshalJSON(b []byte) error {
+	var in struct {
+		Minor    *int64   `json:"minor"`
+		Currency Currency `json:"currency"`
+	}
+	if err := json.Unmarshal(b, &in); err != nil {
+		return err
+	}
+	if in.Minor == nil {
+		return fmt.Errorf("%w: money needs minor and currency", ErrInvalidAmount)
+	}
+	cur, err := ParseCurrency(string(in.Currency))
+	if err != nil {
+		return err
+	}
+	*m = Money{*in.Minor, cur}
+	return nil
+}
