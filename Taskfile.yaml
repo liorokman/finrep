@@ -4,62 +4,52 @@ tasks:
   default:
     deps: [build]
 
-  build-ui:
-    desc: Build frontend Vite + Tailwind UI assets
-    dir: web
-    cmds:
-      - npm install
-      - npm run build
-
   build:
-    desc: Build single-binary Go executable
-    deps: [build-ui]
-    cmds:
-      - go build -o finrep ./cmd/server
-
-  build-ccpdf2csv:
-    desc: Build secondary PDF to CSV converter CLI utility
-    cmds:
-      - go build -o ccpdf2csv ./cmd/ccpdf2csv
-
-  dev:
-    desc: Run server in dev mode with debug logging and OIDC bypass
-    cmds:
-      - go run ./cmd/server --log-level=debug --oidc-enabled=false --port=8080
-
-  build-finrep:
-    desc: Build the v2 server binary (rewrite branch)
+    desc: Build the single binary (the UI is embedded)
     cmds:
       - go build -o finrep ./cmd/finrep
 
-  dev-finrep:
-    desc: Run the v2 server locally (auth off, loopback only)
+  dev:
+    desc: Run locally with login off (loopback only); open /?mock=1 for sample data
     cmds:
       - go run ./cmd/finrep --auth=off --log-level=debug --port=8080
 
-  lint:
-    desc: Format check and vet
-    cmds:
-      # Only the v2 packages are checked; the legacy code is deleted as it is replaced.
-      - test -z "$(gofmt -l cmd/finrep internal/money internal/store internal/conf internal/ledger internal/importer internal/llm internal/categorize internal/billing internal/reports internal/settings internal/authn internal/api internal/jsonx internal/mcpsrv)"
-      - go vet ./...
-
   run-mcp:
-    desc: Run in MCP stdio transport mode
+    desc: Run the MCP server on stdio
     cmds:
-      - go run ./cmd/server --mode=mcp
+      - go run ./cmd/finrep --mode=mcp
+
+  lint:
+    desc: Format check, vet, and a syntax check of every UI module
+    cmds:
+      - test -z "$(gofmt -l cmd internal)"
+      - go vet ./...
+      - task: lint-ui
+
+  lint-ui:
+    desc: Syntax-check the browser modules as ES modules (node --check on .js files is lenient)
+    dir: internal/webui/static
+    cmds:
+      - |
+        fail=0
+        for f in $(find js -name '*.js'); do
+          tmp=$(mktemp --suffix=.mjs); cp "$f" "$tmp"
+          node --check "$tmp" >/dev/null 2>&1 || { echo "syntax error in $f"; node --check "$tmp" 2>&1 | head -3; fail=1; }
+          rm -f "$tmp"
+        done
+        exit $fail
 
   test:
-    desc: Run all Go unit and integration tests
+    desc: Run all Go tests
     cmds:
-      - go test -v ./...
+      - go test ./...
+
+  test-race:
+    desc: Run all Go tests with the race detector
+    cmds:
+      - go test -race ./...
 
   docker-build:
-    desc: Build multi-stage Docker container image
+    desc: Build the container image
     cmds:
       - docker build -t finrep:latest .
-
-  docker-up:
-    desc: Start Docker container environment
-    cmds:
-      - docker-compose up -d
