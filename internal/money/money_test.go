@@ -104,3 +104,24 @@ func TestFormatNegative(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestZeroDecimalAndExtraCurrencies(t *testing.T) {
+	jpy, err := Parse("5,000", "JPY")
+	if err != nil || jpy.Minor() != 5000 || Format(5000, "JPY") != "5000" {
+		t.Fatalf("JPY: %v %v %q", jpy, err, Format(5000, "JPY"))
+	}
+	if _, err := Parse("5000.50", "JPY"); err == nil {
+		t.Fatal("JPY with fraction accepted")
+	}
+	if m, err := Parse("5000.00", "JPY"); err != nil || m.Minor() != 5000 {
+		t.Fatalf("JPY with .00: %v %v", m, err)
+	}
+	if m, err := Parse("12.500", ILS); err != nil || m.Minor() != 1250 {
+		t.Fatalf("trailing zero decimals: %v %v", m, err)
+	}
+	for _, c := range []string{"CHF", "CAD", "aud"} {
+		if _, err := ParseCurrency(c); err != nil {
+			t.Errorf("%s should be supported: %v", c, err)
+		}
+	}
+}

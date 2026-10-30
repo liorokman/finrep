@@ -17,7 +17,7 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - `config`: flags + env, validation (refuse to start with auth on and no session secret).
 - Acceptance: migrations apply to empty DB; money round-trips; config validation tests.
 
-## Phase 2 — Ledger core
+## Phase 2 — Ledger core  *(done: `internal/ledger`)*
 - Accounts (owner, currency, billing rules), categories (merge, delete, `created_by`), transactions CRUD, bulk update, pagination caps.
 - Acceptance: category delete/merge re-points transactions in one database transaction.
 

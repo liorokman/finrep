@@ -20,8 +20,26 @@ const (
 	GBP Currency = "GBP"
 )
 
-// minorDigits lists the supported currencies and their decimal places.
-var minorDigits = map[Currency]int{ILS: 2, USD: 2, EUR: 2, GBP: 2}
+// minorDigits lists the supported currencies and their decimal places. Foreign
+// purchases on Israeli cards can be in any common currency, so the list is broad.
+var minorDigits = func() map[Currency]int {
+	m := map[Currency]int{}
+	for _, c := range strings.Fields(`ILS USD EUR GBP AUD CAD CHF CNY CZK DKK HKD HUF INR MXN NOK NZD PLN RON RUB
+		SEK SGD THB TRY UAH ZAR AED BGN BRL EGP GEL JOD RSD HRK ISK MAD PHP IDR MYR TWD`) {
+		m[Currency(c)] = 2
+	}
+	for _, c := range strings.Fields(`JPY KRW VND CLP`) {
+		m[Currency(c)] = 0
+	}
+	return m
+}()
+
+func digitsFor(cur Currency) int {
+	if d, ok := minorDigits[cur]; ok {
+		return d
+	}
+	return 2
+}
 
 var (
 	ErrCurrencyMismatch = errors.New("money: currency mismatch")
@@ -117,10 +135,7 @@ func (m Money) String() string {
 
 // Format renders minor units as a plain decimal string without symbol.
 func Format(minor int64, cur Currency) string {
-	digits := minorDigits[cur]
-	if digits == 0 {
-		digits = 2
-	}
+	digits := digitsFor(cur)
 	neg := minor < 0
 	// Avoid overflow on MinInt64 by working in uint64.
 	u := uint64(minor)
@@ -128,7 +143,10 @@ func Format(minor int64, cur Currency) string {
 		u = -u
 	}
 	div := uint64(math.Pow10(digits))
-	s := fmt.Sprintf("%d.%0*d", u/div, digits, u%div)
+	s := fmt.Sprintf("%d", u/div)
+	if digits > 0 {
+		s = fmt.Sprintf("%d.%0*d", u/div, digits, u%div)
+	}
 	if neg {
 		s = "-" + s
 	}
@@ -171,7 +189,11 @@ func Parse(s string, cur Currency) (Money, error) {
 	}
 	whole, frac, _ := strings.Cut(t, ".")
 	if len(frac) > digits {
-		return Money{}, fmt.Errorf("%w: %q has too many decimals", ErrInvalidAmount, orig)
+		// Extra decimals are fine only if they are zeros ("12.500" in ILS).
+		if strings.Trim(frac[digits:], "0") != "" {
+			return Money{}, fmt.Errorf("%w: %q has too many decimals", ErrInvalidAmount, orig)
+		}
+		frac = frac[:digits]
 	}
 	frac += strings.Repeat("0", digits-len(frac))
 	if whole == "" {
@@ -181,7 +203,10 @@ func Parse(s string, cur Currency) (Money, error) {
 	if err != nil {
 		return Money{}, fmt.Errorf("%w: %q", ErrOverflow, orig)
 	}
-	f, _ := strconv.ParseInt(frac, 10, 64)
+	var f int64
+	if frac != "" {
+		f, _ = strconv.ParseInt(frac, 10, 64)
+	}
 	scale := int64(math.Pow10(digits))
 	if w > (math.MaxInt64-f)/scale {
 		return Money{}, fmt.Errorf("%w: %q", ErrOverflow, orig)
@@ -196,9 +221,5 @@ func Parse(s string, cur Currency) (Money, error) {
 // FromFloat converts a float produced by a legacy parser, rounding to the
 // nearest minor unit. Use only at system boundaries, never for arithmetic.
 func FromFloat(f float64, cur Currency) Money {
-	digits := minorDigits[cur]
-	if digits == 0 {
-		digits = 2
-	}
-	return Money{int64(math.Round(f * math.Pow10(digits))), cur}
+	return Money{int64(math.Round(f * math.Pow10(digitsFor(cur)))), cur}
 }
