@@ -55,7 +55,7 @@ All reports use one `ledger_view` definition:
 4. **Commit** in one database transaction, recorded as an import batch.
 
 ### 4.3 Deduplication
-Row identity = `account_id | date | amount | payee_raw | n`, where **`n` is the 1-based position among identical rows within the same uploaded file**. It never depends on what is already stored. Consequences: re-importing a file inserts nothing; overlapping exports dedupe; two genuine identical purchases on one day both import. If an overlapping export contains *more* identical rows than were previously imported, only the extra ones are inserted.
+Row identity = `account | date | amount | currency | payee | statement bill date | issuer/bank reference | n`, hashed, where **`n` is the 1-based position among identical rows within the same uploaded file**. It never depends on what is already stored. Including the statement bill date keeps identical purchases that fall into different statements apart, and lets a "future charge" in one statement match the same charge when it later appears as a regular line. The bank reference (`אסמכתא`) separates same-day debits with different amounts. Consequences: re-importing a file inserts nothing; overlapping exports dedupe; two genuine identical purchases on one day both import. If an overlapping export contains *more* identical rows than were previously imported, only the extra ones are inserted.
 
 ### 4.3a Employer coverage pairing
 During import, each coverage line is linked to the purchase it covers: same card, same purchase date, same merchant, and a coverage amount no larger than the purchase (partial coverage allowed: ₪902.90 purchase, ₪770.76 covered, ₪132.14 paid by the user). The line pattern is a setting (default `חיוב תקציב סאפ`) so it survives employer or budget-name changes. A coverage line that cannot be paired is kept, flagged in a "needs attention" list, and counts toward the statement total but not toward spending. Pairing never changes the statement total, which still equals the printed one.
@@ -64,7 +64,7 @@ During import, each coverage line is linked to the purchase it covers: same card
 Parsed from mapped columns or from text ("תשלום 2 מתוך 12"). Stored as `current/total`; used by the payoff forecast.
 
 ### 4.5 Cutoff
-History before **2023** is incomplete, so 2023 is the earliest year the application works with. Rows dated before `2023-01-01` (billing date when present, otherwise transaction date) are skipped by every importer; this is a floor, not a setting. A later cutoff (YYYY-MM or YYYY-MM-DD) may be configured as a default or chosen per import, but never earlier than the floor. Reports, statements and the import wizard therefore never show or generate anything before 2023.
+History before **2023** is incomplete, so 2023 is the earliest year the application works with. Rows whose purchase or posting date is before `2023-01-01` are skipped by every importer and reported as skipped; this is a floor, not a setting. A later cutoff (YYYY-MM or YYYY-MM-DD) may be configured as a default or chosen per import, but never earlier than the floor. Reports, statements and the import wizard therefore never show or generate anything before 2023.
 
 ## 5. Categorization
 
