@@ -76,7 +76,7 @@ export default {
         h('td', { class: 'col-check' }, h('input', { class: 'check', type: 'checkbox', checked: sel.has(t.id), 'aria-label': 'Select ' + t.payee_raw, onclick: (e) => { toggle(i, e.shiftKey); e.stopPropagation(); } })),
         h('td', null, h('div', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'dotslot' }, unrev && h('i', { class: 'unreviewed', title: 'Not reviewed yet' })), h('span', null, h('div', null, date(t.date, { year: false })), h('div', { class: 'sub' }, weekday(t.date) + (t.date.slice(0, 4) !== state.today.slice(0, 4) ? ' · ' + t.date.slice(0, 4) : ''))))),
         h('td', { class: 'payee' }, h('button', { class: 'rowlink', type: 'button', onclick: () => open(t) }, utBlock(t.payee_cleaned || t.payee_raw, cov ? 'muted' : 'strong'),
-          (subs.length || cov) && h('span', { class: 'sub ut-block', dir: 'auto' }, cov && h('span', { style: { marginInlineEnd: '6px' } }, 'Employer covers · '), subs.join(' · ')))),
+          h('span', { class: 'sub ut-block', dir: 'auto' }, h('span', { class: 'only-m' }, date(t.date, { year: false }) + (subs.length || cov ? ' · ' : '')), cov && h('span', { style: { marginInlineEnd: '6px' } }, 'Employer covers · '), subs.join(' · ')))),
         h('td', { class: 'hide-m' }, utBlock(t.account_name, 'muted small')),
         h('td', null, cov ? h('span', { class: 'muted small' }, 'Follows the purchase') : categoryChip(t, { onClick: (e) => { e.stopPropagation(); chooseCategory(e.currentTarget, [t]); } })),
         h('td', { class: 'num' }, amount(t.amount, { income: true })),

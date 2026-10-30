@@ -214,3 +214,21 @@ table.t.fixed { table-layout: fixed; }
 button.cardtile { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; text-align: start; border: 0; color: inherit; cursor: pointer; width: 100%; }
 button.cardtile:hover { box-shadow: 0 0 0 1px var(--ink-3); }
 button.cardtile.on { box-shadow: 0 0 0 2px var(--accent); }
+
+.only-m { display: none; }
+.seg { max-width: 100%; overflow-x: auto; }
+.seg button { white-space: nowrap; }
+@media (max-width: 700px) {
+  .filters .field { min-width: 0; max-width: 100%; }
+  .only-m { display: inline; }
+  .t.fixed col { width: auto !important; }
+  .t.fixed col:nth-child(1) { width: 36px !important; } .t.fixed col:nth-child(6) { width: 96px !important; } .t.fixed col:nth-child(7) { width: 40px !important; }
+  .t.fixed col:nth-child(2), .t.fixed col:nth-child(4), .t.fixed col:nth-child(5) { display: none; }
+  .t.fixed th:nth-child(2), .t.fixed td:nth-child(2), .t.fixed th:nth-child(4), .t.fixed td:nth-child(4) { display: none; }
+  .t.fixed th:nth-child(5), .t.fixed td:nth-child(5) { display: none; }
+  .t td { padding-inline: 8px; }
+  .card { padding: var(--s-4); }
+  .tl .day { min-width: 64px; }
+  .heat { grid-template-columns: minmax(110px, 140px) repeat(var(--cols), 44px); }
+  .drawer { width: 100vw; }
+}
