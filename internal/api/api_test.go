@@ -248,6 +248,13 @@ func TestCategoriesEndpoints(t *testing.T) {
 		t.Fatalf("%v", items)
 	}
 	g.call("GET", "/api/v1/categories?created_by=ROBOT", nil).want(400)
+	kept := g.call("PATCH", "/api/v1/categories/"+llm.ID, map[string]any{"keep": true}).want(200).json()
+	if kept["created_by"] != "USER" {
+		t.Fatalf("keep did not take ownership: %v", kept)
+	}
+	if n := g.call("GET", "/api/v1/categories?created_by=LLM", nil).want(200).json()["items"].([]any); len(n) != 0 {
+		t.Fatalf("a kept category is still listed for review: %v", n)
+	}
 	g.call("DELETE", "/api/v1/categories/"+a["id"].(string), nil).want(204)
 	g.call("DELETE", "/api/v1/categories/"+a["id"].(string), nil).want(404)
 }

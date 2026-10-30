@@ -243,7 +243,25 @@ export async function mockRequest(method, path, { params = {}, body } = {}) {
   let m;
   if (path === '/api/v1/auth/me') return { auth_enabled: false, authenticated: true, user: { sub: 'local', name: 'Alice Example', email: 'alice@example.com' } };
   if (path === '/api/v1/accounts') return { items: ACC.map((a) => ({ ...a, balance: M(balance(a, TODAY)), opening_balance: M(a.type === 'BANK' ? OPENING : 0) })) };
-  if (path === '/api/v1/categories') return { items: CATS.filter((c) => !params.created_by || c.created_by === params.created_by) };
+  if (path === '/api/v1/categories' && method === 'GET') return { items: CATS.filter((c) => !params.created_by || c.created_by === params.created_by) };
+  if (path === '/api/v1/categories' && method === 'POST') {
+    if (CATS.some((c) => c.name_en.toLowerCase() === (body.name_en || '').toLowerCase())) throw new MockError(409, 'already exists');
+    const c = { id: id('cat'), name_en: body.name_en, name_he: body.name_he || body.name_en, parent_id: null, color_hex: PAL[CATS.length % 8], icon: 'tag', type: body.type, monthly_budget: body.monthly_budget_minor ? M(body.monthly_budget_minor) : null, created_by: 'USER' };
+    CATS.push(c); return c;
+  }
+  if ((m = path.match(/^\/api\/v1\/categories\/([^/]+)(\/merge)?$/))) {
+    const i = CATS.findIndex((c) => c.id === m[1]); if (i < 0) throw new MockError(404, 'not found');
+    if (m[2]) { const to = CATS.find((c) => c.id === body.into); TX.forEach((t) => { if (t.category_id === m[1]) Object.assign(t, { category_id: to.id, category_name_en: to.name_en, category_name_he: to.name_he }); }); CATS.splice(i, 1); return null; }
+    if (method === 'DELETE') { TX.forEach((t) => { if (t.category_id === m[1]) Object.assign(t, { category_id: null, category_name_en: '', category_name_he: '', categorized_by: 'UNSET' }); }); CATS.splice(i, 1); return null; }
+    const c = CATS[i]; for (const k of ['name_en', 'name_he', 'type']) if (body[k]) c[k] = body[k];
+    if (body.monthly_budget_minor != null) c.monthly_budget = M(body.monthly_budget_minor); if (body.clear_budget) c.monthly_budget = null; if (body.keep) c.created_by = 'USER';
+    return c;
+  }
+  if (path === '/api/v1/accounts' && method === 'POST') { const a = { id: id('acc'), name: body.name, type: body.type, institution: body.institution, owner: body.owner || '', last4: body.last4 || '', currency: 'ILS', billing_rules: body.billing_rules || [] }; ACC.push(a); return { ...a, balance: M(0), opening_balance: M(0) }; }
+  if ((m = path.match(/^\/api\/v1\/accounts\/([^/]+)\/billing-rules$/))) { const a = ACC.find((x) => x.id === m[1]); a.billing_rules = body.rules; return { rules: a.billing_rules, bill_dates_recomputed: 0 }; }
+  if (path === '/api/v1/categorization/runs' && method === 'GET') return { items: [{ id: 'run_latest', status: 'DONE', started_at: '2026-10-30 08:05:11', finished_at: '2026-10-30 08:07:40', classifier_model: 'qwen2.5-7b-instruct', generator_model: 'qwen2.5-14b-instruct', threshold: 0.75, processed: 71, total: 71, error: '' }] };
+  if (/^\/api\/v1\/categorization\/runs\/[^/]+\/undo$/.test(path)) return { reverted: 22 };
+  if (path === '/api/v1/settings/test-llm') return { classifier: { ok: true }, generator: { ok: true } };
   if (path === '/api/v1/transactions' && method === 'GET') {
     let rows = scoped({ from: params.from, to: params.to, account_id: params.account_id, owner: params.owner });
     const cats = [].concat(params.category_id || []);
@@ -285,6 +303,7 @@ export async function mockRequest(method, path, { params = {}, body } = {}) {
   }
   if (/^\/api\/v1\/imports\/staged\/[^/]+\/commit$/.test(path)) return { batch_id: 'b4', inserted: 39, duplicates: 2, skipped: [], rejected: [], warnings: [], bill_dates_assigned: 0 };
   if (path === '/api/v1/categorization/runs' && method === 'POST') return { started: false, reason: 'no uncategorized transactions' };
-  if (path === '/api/v1/settings') return { items: [{ key: 'llm_base_url', label: 'LLM endpoint (OpenAI-compatible base URL)', secret: false, is_set: true, value: 'http://localai.lan:8080/v1' }, { key: 'llm_api_key', label: 'LLM API key', secret: true, is_set: true, value: '' }, { key: 'classifier_model', label: 'Decision (classifier) model', secret: false, is_set: true, value: 'qwen2.5-7b-instruct' }, { key: 'generator_model', label: 'Generator model', secret: false, is_set: true, value: 'qwen2.5-14b-instruct' }] };
+  if (path === '/api/v1/settings' && method === 'PUT') return mockRequest('GET', path, {});
+  if (path === '/api/v1/settings') return { items: [{ key: 'llm_base_url', label: 'LLM endpoint (OpenAI-compatible base URL)', secret: false, is_set: true, value: 'http://localai.lan:8080/v1' }, { key: 'llm_api_key', label: 'LLM API key', secret: true, is_set: true, value: '' }, { key: 'classifier_model', label: 'Decision (classifier) model', secret: false, is_set: true, value: 'qwen2.5-7b-instruct' }, { key: 'generator_model', label: 'Generator model', secret: false, is_set: true, value: 'qwen2.5-14b-instruct' }, { key: 'categorization_threshold', label: 'Confidence needed to use an existing category', secret: false, is_set: false, value: '' }, { key: 'categorization_batch_size', label: 'Distinct payees per request', secret: false, is_set: false, value: '' }, { key: 'card_payment_hints', label: 'Words that mark a bank line as a card payment (one per line)', secret: false, is_set: true, value: 'כרטיסי אשראי\nישראכרט\nלאומי מאסטרקרד' }] };
   throw new MockError(404, 'no mock for ' + method + ' ' + path);
 }

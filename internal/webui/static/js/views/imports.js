@@ -71,9 +71,9 @@ export default {
         h('div', { class: 'card flush' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'First lines'), h('div', { class: 'sub' }, 'A sample of what will be imported'))),
           h('div', { class: 'table-wrap' }, h('table', { class: 't dense fixed' }, h('colgroup', null, h('col', { style: { width: '120px' } }), h('col'), h('col', { style: { width: '130px' } })),
             h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'Payee'), h('th', { class: 'num' }, 'Amount'))),
-            h('tbody', null, s.sample_lines.map((l) => h('tr', null, h('td', null, date(l.date, { year: false })), h('td', null, utBlock(l.payee, l.kind === 'EMPLOYER_COVERAGE' ? 'muted' : ''), l.kind === 'EMPLOYER_COVERAGE' && h('span', { class: 'sub' }, 'Employer covers')), h('td', { class: 'num' }, amount(l.amount, { income: true }))))))))),
+            h('tbody', null, s.sample_lines.map((l) => h('tr', null, h('td', null, date(l.date, { year: false })), h('td', null, utBlock(l.payee, l.kind === 'EMPLOYER_COVERAGE' ? 'muted' : ''), l.kind === 'EMPLOYER_COVERAGE' && h('span', { class: 'sub' }, 'Employer covers')), h('td', { class: 'num' }, amount(l.amount, { income: true })))))))),
         h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', disabled: busy || !s.accountId || (pv && pv.new === 0), onclick: commit }, icon('check', 'sm'), pv ? (pv.new === 0 ? 'Nothing new to import' : 'Import ' + plural(pv.new, 'new transaction')) : 'Import'),
-          h('button', { class: 'btn', type: 'button', onclick: () => { staged = null; step = 1; draw(); } }, 'Cancel'));
+          h('button', { class: 'btn', type: 'button', onclick: () => { staged = null; step = 1; draw(); } }, 'Cancel')));
     }
     async function checkAccount() { try { const fresh = await api.upload('/api/v1/imports/stage', (() => { const fd = new FormData(); fd.append('file', new Blob(['x']), staged.filename); fd.append('account_id', staged.accountId); return fd; })()); Object.assign(staged, { preview: fresh.preview }); } catch (e) { toast(e.message); } draw(); }
 

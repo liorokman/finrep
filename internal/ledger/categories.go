@@ -246,3 +246,19 @@ func (l *Ledger) MergeCategories(ctx context.Context, fromID, toID string) error
 		return nil
 	})
 }
+
+// SetCategoryCreator records who owns a category. Reviewing a model-created category and keeping it
+// makes it the user's own, so it stops appearing in the review list.
+func (l *Ledger) SetCategoryCreator(ctx context.Context, id string, by Creator) error {
+	if by != ByUser && by != ByLLM {
+		return invalid("created_by must be USER or LLM")
+	}
+	res, err := l.st.ExecContext(ctx, `UPDATE categories SET created_by = ? WHERE id = ?`, by, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

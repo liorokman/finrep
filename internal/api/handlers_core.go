@@ -345,6 +345,7 @@ type categoryPatch struct {
 	Type               *ledger.CategoryType `json:"type"`
 	MonthlyBudgetMinor *int64               `json:"monthly_budget_minor"`
 	ClearBudget        bool                 `json:"clear_budget"`
+	Keep               bool                 `json:"keep"` // accept a model-created category as your own
 }
 
 func (s *Server) updateCategory(w http.ResponseWriter, r *http.Request) {
@@ -387,6 +388,13 @@ func (s *Server) updateCategory(w http.ResponseWriter, r *http.Request) {
 	if err := s.d.Ledger.UpdateCategory(r.Context(), c); err != nil {
 		fail(w, r, err)
 		return
+	}
+	if in.Keep {
+		if err := s.d.Ledger.SetCategoryCreator(r.Context(), c.ID, ledger.ByUser); err != nil {
+			fail(w, r, err)
+			return
+		}
+		c.CreatedBy = ledger.ByUser
 	}
 	writeJSON(w, http.StatusOK, c)
 }
