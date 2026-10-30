@@ -90,8 +90,8 @@ session ends (24 hours idle, 30 days at most).
 
 ## MCP: use your data from an AI agent
 
-Eight read-only tools: `list_accounts`, `get_account_summary`, `query_transactions`, `get_net_worth_trend`,
-`get_category_breakdown`, `get_cash_flow`, `get_recurring`, `get_statements`. They never change data.
+Nine read-only tools: `list_accounts`, `get_account_summary`, `query_transactions`, `get_net_worth_trend`,
+`get_category_breakdown`, `get_cash_flow`, `get_summary`, `get_recurring`, `get_statements`. They never change data.
 
 **Local process (stdio)**, for example in Claude Desktop's `claude_desktop_config.json`:
 

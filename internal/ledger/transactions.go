@@ -302,6 +302,7 @@ const Uncategorized = "uncategorized"
 // TxFilter selects transactions. Zero values mean "no restriction".
 type TxFilter struct {
 	AccountIDs  []string
+	Owner       string   // only accounts owned by this person
 	CategoryIDs []string // may include Uncategorized
 	Kinds       []TxKind
 	DateFrom    string // inclusive, YYYY-MM-DD
@@ -324,6 +325,10 @@ func (f TxFilter) where() (string, []any, error) {
 	}
 	if len(f.AccountIDs) > 0 {
 		in("t.account_id", f.AccountIDs)
+	}
+	if f.Owner != "" {
+		conds = append(conds, "t.account_id IN (SELECT id FROM accounts WHERE owner = ?)")
+		args = append(args, f.Owner)
 	}
 	if len(f.CategoryIDs) > 0 {
 		var real []string

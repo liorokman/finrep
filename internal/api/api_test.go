@@ -446,3 +446,44 @@ func TestNewRejectsIncompleteDeps(t *testing.T) {
 		t.Error("auth on without sessions accepted")
 	}
 }
+
+func TestTransactionTotalsCoverEveryMatchNotJustThePage(t *testing.T) {
+	g := newRig(t, false)
+	mine := g.account("Leumi", "BANK")
+	wife := g.call("POST", "/api/v1/accounts", map[string]any{"name": "Hers", "type": "BANK", "institution": "X", "owner": "Wife"}).want(201).json()["id"].(string)
+	food := g.call("POST", "/api/v1/categories", map[string]any{"name_en": "Food", "type": "EXPENSE"}).want(201).json()["id"].(string)
+	move := g.call("POST", "/api/v1/categories", map[string]any{"name_en": "Move", "type": "TRANSFER"}).want(201).json()["id"].(string)
+	add := func(acc, date string, minor int, payee, cat string) {
+		body := map[string]any{"account_id": acc, "date": date, "amount_minor": minor, "payee": payee}
+		if cat != "" {
+			body["category_id"] = cat
+		}
+		g.call("POST", "/api/v1/transactions", body).want(201)
+	}
+	add(mine, "2026-02-01", -1000, "SHOP", food)
+	add(mine, "2026-02-02", -500, "SHOP2", "") // uncategorized debit: spending
+	add(mine, "2026-02-03", 5000, "SALARY", "")
+	add(mine, "2026-02-04", -2000, "TO SAVINGS", move) // a transfer: not counted
+	add(wife, "2026-02-05", -700, "HER SHOP", food)
+
+	if _, ok := g.call("GET", "/api/v1/transactions?limit=1", nil).want(200).json()["totals"]; ok {
+		t.Fatal("totals are only computed when asked for")
+	}
+	r := g.call("GET", "/api/v1/transactions?limit=1&totals=1&owner=Alice", nil).want(200).json() // one line per page, four matches
+	if r["total"].(float64) != 4 {
+		t.Fatalf("the owner filter must apply: %v", r["total"])
+	}
+	tot := r["totals"].([]any)
+	if len(tot) != 1 {
+		t.Fatalf("%v", tot)
+	}
+	m := func(k string) float64 { return tot[0].(map[string]any)[k].(map[string]any)["minor"].(float64) }
+	n := func(k string) float64 { return tot[0].(map[string]any)[k].(float64) }
+	if m("spending") != 1500 || m("income") != 5000 || m("net") != 3500 || n("not_counted") != 1 || m("not_counted_amount") != -2000 || m("sum") != 1500 || n("count") != 4 {
+		t.Fatalf("totals: %v", tot[0])
+	}
+	all := g.call("GET", "/api/v1/transactions?totals=1", nil).want(200).json()["totals"].([]any)[0].(map[string]any)
+	if all["spending"].(map[string]any)["minor"].(float64) != 2200 {
+		t.Fatalf("without an owner, every account counts: %v", all)
+	}
+}

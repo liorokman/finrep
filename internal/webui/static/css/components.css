@@ -100,6 +100,9 @@ table.t { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 
 .t .dotslot { display: inline-block; width: 14px; flex: none; }
 .t .unreviewed { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .t .sub { color: var(--ink-3); font-size: var(--fs-xs); display: block; }
+.t-totals { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2) var(--s-5); padding: var(--s-3) var(--s-4); border-top: 1px solid var(--line); background: var(--surface-2); font-size: var(--fs-sm); }
+.t-totals .spacer { margin-inline-start: auto; }
+.amount.neg { color: var(--crit-text); }
 .t-foot { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-top: 1px solid var(--line); color: var(--ink-3); font-size: var(--fs-sm); }
 .amount.pos { color: var(--pos); }
 .amount.faint { color: var(--ink-3); }

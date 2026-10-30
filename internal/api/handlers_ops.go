@@ -304,6 +304,9 @@ var reportTable = map[string]reportFn{
 	"net-worth": func(ctx context.Context, rs *reports.Service, f reports.Filter) (any, error) {
 		return items(rs.NetWorth(ctx, f))
 	},
+	"summary": func(ctx context.Context, rs *reports.Service, f reports.Filter) (any, error) {
+		return rs.Summary(ctx, f)
+	},
 	"cash-flow": func(ctx context.Context, rs *reports.Service, f reports.Filter) (any, error) {
 		return items(rs.CashFlow(ctx, f))
 	},

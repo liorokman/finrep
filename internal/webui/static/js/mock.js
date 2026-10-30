@@ -197,12 +197,42 @@ function balance(acc, upTo) {
 }
 
 function report(name, p) {
-  const measure = p.measure || (name === 'cash-flow' || name === 'net-worth' ? 'OUT_OF_POCKET' : 'GROSS');
+  const measure = p.measure || (name === 'cash-flow' || name === 'net-worth' || name === 'summary' ? 'OUT_OF_POCKET' : 'GROSS');
   const rows = scoped(p);
   if (name === 'cash-flow') {
     const by = {}; for (const t of rows) { const f = flow(t); if (f === 'X') continue; const m = ym(t.date); by[m] ||= { i: 0, s: 0 }; if (f === 'I') by[m].i += value(t, measure); else by[m].s += value(t, measure); }
     const ms = Object.keys(by).sort(); if (!ms.length) return { items: [] };
     return { items: monthsBetween(ms[0], ms[ms.length - 1]).map((m) => { const x = by[m] || { i: 0, s: 0 }; return { month: m, income: M(x.i), spending: M(x.s), net: M(x.i - x.s), savings_rate: x.i > 0 ? (x.i - x.s) / x.i : null }; }) };
+  }
+  if (name === 'summary') {
+    const dayN = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 864e5;
+    const isoOf = (n) => new Date(n * 864e5).toISOString().slice(0, 10);
+    const first = TX.map((t) => t.date).sort()[0];
+    const to = p.to && p.to < TODAY ? p.to : TODAY; let from = !p.from || p.from < first ? first : p.from; if (from > to) from = to;
+    const days = dayN(to) - dayN(from) + 1;
+    const sums = (a, b) => { let i = 0, sp = 0; for (const t of scoped({ ...p, from: a, to: b })) { const f = flow(t); if (f === 'I') i += value(t, measure); else if (f === 'S') sp += value(t, measure); } return { i, sp }; };
+    const { i: inc, sp: spend } = sums(from, to);
+    const perMonth = (v) => Math.round(v * 30.4375 / days);
+    const cf = report('cash-flow', { ...p, from, to }).items.filter((m) => m.month + '-01' >= from && isoOf(dayN(m.month + '-01') + new Date(+m.month.slice(0, 4), +m.month.slice(5, 7), 0).getDate() - 1) <= to);
+    const sp = cf.map((m) => m.spending.minor).sort((a, b) => a - b);
+    const hi = cf.length ? cf.reduce((a, m) => (m.spending.minor > a.spending.minor ? m : a)) : null, lo = cf.length ? cf.reduce((a, m) => (m.spending.minor < a.spending.minor ? m : a)) : null;
+    const buys = scoped({ ...p, from, to }).filter((t) => flow(t) === 'S' && value(t, measure) > 0 && !(t.account_id === 'acc_bank' && /כרטיסי אשראי|ישראכרט|מאסטרקרד/.test(t.payee_raw)));
+    const bd = report('category-breakdown', { ...p, from, to, measure });
+    const unc = scoped({ ...p, from, to }).filter((t) => flow(t) === 'S' && !t.category_id);
+    let previous = null;
+    if (p.from) {
+      const pTo = isoOf(dayN(from) - 1), pFrom = isoOf(dayN(from) - days);
+      const pv = sums(pFrom, pTo);
+      if (pv.i || pv.sp) previous = { from: pFrom, to: pTo, income: M(pv.i), spending: M(pv.sp), net: M(pv.i - pv.sp), complete: pFrom >= first.slice(0, 7) + '-01', income_change: pv.i ? (inc - pv.i) / Math.abs(pv.i) : null, spending_change: pv.sp ? (spend - pv.sp) / Math.abs(pv.sp) : null };
+    }
+    return { from, to, days, income: M(inc), spending: M(spend), net: M(inc - spend), savings_rate: inc > 0 ? (inc - spend) / inc : null,
+      per_month: { income: M(perMonth(inc)), spending: M(perMonth(spend)), net: M(perMonth(inc - spend)) }, spending_per_day: M(Math.round(spend / days)),
+      complete_months: cf.length, highest_spending_month: hi && { month: hi.month, amount: hi.spending }, lowest_spending_month: lo && { month: lo.month, amount: lo.spending },
+      median_month_spending: sp.length ? M(sp.length % 2 ? sp[(sp.length - 1) / 2] : Math.round((sp[sp.length / 2 - 1] + sp[sp.length / 2]) / 2)) : null,
+      purchases: buys.length, average_purchase: M(buys.length ? Math.round(buys.reduce((s, t) => s + value(t, measure), 0) / buys.length) : 0),
+      largest: buys.sort((a, b) => value(b, measure) - value(a, measure)).slice(0, 5).map((t) => ({ transaction_id: t.id, date: t.date, payee: t.payee_raw, amount: M(value(t, measure)), category_id: t.category_id || '', category_name: (catOf(t) || {}).name_en || '' })),
+      top_categories: bd.items.slice(0, 5).map((c) => ({ category_id: c.category_id, name_en: c.name_en, name_he: c.name_he, amount: c.amount, share: c.share, per_month: M(perMonth(c.amount.minor)) })),
+      uncategorized: { count: unc.length, amount: M(unc.reduce((s, t) => s + value(t, measure), 0)) }, previous };
   }
   if (name === 'category-breakdown') {
     const by = {}; let total = 0;
@@ -289,7 +319,16 @@ export async function mockRequest(method, path, { params = {}, body } = {}) {
     if (params.needs_review) rows = rows.filter((t) => !t.is_reviewed && t.kind !== 'EMPLOYER_COVERAGE');
     if (params.q) { const q = params.q.toLowerCase(); rows = rows.filter((t) => t.payee_raw.toLowerCase().includes(q) || (t.notes || '').toLowerCase().includes(q)); }
     const limit = Math.min(+params.limit || 50, 500), offset = +params.offset || 0;
-    return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    const out = { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    if (params.totals) {
+      let spending = 0, income = 0, notCounted = 0, notCountedSum = 0, sum = 0, spendLines = 0;
+      for (const t of rows) {
+        const f = flow(t); sum += t.amount.minor;
+        if (f === 'S') { spending += value(t, 'OUT_OF_POCKET'); spendLines++; } else if (f === 'I') income += t.amount.minor; else { notCounted++; notCountedSum += t.amount.minor; }
+      }
+      out.totals = rows.length ? [{ currency: 'ILS', count: rows.length, spending: M(spending), income: M(income), net: M(income - spending), not_counted: notCounted, not_counted_amount: M(notCountedSum), sum: M(sum), spending_lines: spendLines }] : [];
+    }
+    return out;
   }
   if (path === '/api/v1/transactions' && method === 'PATCH') {
     let n = 0;

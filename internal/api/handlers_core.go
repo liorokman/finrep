@@ -450,7 +450,7 @@ func (s *Server) listTransactions(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	f := ledger.TxFilter{AccountIDs: q["account_id"], CategoryIDs: q["category_id"], DateFrom: q.Get("from"), DateTo: q.Get("to"),
+	f := ledger.TxFilter{AccountIDs: q["account_id"], Owner: q.Get("owner"), CategoryIDs: q["category_id"], DateFrom: q.Get("from"), DateTo: q.Get("to"),
 		Search: q.Get("q"), NeedsReview: review, Limit: limit, Offset: offset}
 	for _, k := range q["kind"] {
 		f.Kinds = append(f.Kinds, ledger.TxKind(strings.ToUpper(k)))
@@ -460,7 +460,16 @@ func (s *Server) listTransactions(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": list(items), "total": total, "limit": limit, "offset": offset})
+	out := map[string]any{"items": list(items), "total": total, "limit": limit, "offset": offset}
+	if q.Get("totals") == "1" { // sums over every match, not just this page; off by default as most callers only need the page
+		totals, err := s.d.Ledger.TransactionTotals(r.Context(), f)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		out["totals"] = list(totals)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) getTransaction(w http.ResponseWriter, r *http.Request) {

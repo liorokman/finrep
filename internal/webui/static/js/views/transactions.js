@@ -39,9 +39,9 @@ export default {
 
   async render(ctx) {
     if (consumeNav(ctx.query)) return h('div');
-    let items = [], total = 0, loading = false;
+    let items = [], total = 0, totals = [], loading = false;
     const sel = new Set(); let focus = -1, anchor = -1;
-    const body = h('tbody'); const foot = h('div', { class: 't-foot' }); const bulk = h('div', { class: 'bulk-host' });
+    const body = h('tbody'); const tots = h('div', { class: 't-totals-host' }); const foot = h('div', { class: 't-foot' }); const bulk = h('div', { class: 'bulk-host' });
     const kb = h('span', { class: 'xs muted' });
 
     // ----- toolbar -----
@@ -89,7 +89,7 @@ export default {
       mount(body, items.map(rowFor));
       allBox.checked = items.length > 0 && items.every((t) => sel.has(t.id));
       allBox.indeterminate = !allBox.checked && items.some((t) => sel.has(t.id));
-      paintBulk(); paintFoot();
+      paintBulk(); paintFoot(); paintTotals();
     }
     function paintFocus() { body.querySelectorAll('tr').forEach((tr, i) => { tr.classList.toggle('focus', i === focus); tr.tabIndex = i === focus ? 0 : -1; }); const tr = body.children[focus]; tr && tr.scrollIntoView({ block: 'nearest' }); }
     function toggle(i, range) {
@@ -100,6 +100,19 @@ export default {
       mount(foot, h('span', null, total ? 'Showing ' + items.length + ' of ' + total : ''),
         items.length < total && h('button', { class: 'btn sm', type: 'button', disabled: loading, onclick: loadMore }, 'Show ' + Math.min(PAGE, total - items.length) + ' more'),
         h('span', { class: 'spacer xs' }, h('kbd', null, '↑'), ' ', h('kbd', null, '↓'), ' move  ', h('kbd', null, 'Space'), ' select  ', h('kbd', null, 'C'), ' category  ', h('kbd', null, 'R'), ' reviewed  ', h('kbd', null, 'Enter'), ' details'));
+    }
+    // Sums over every line this view matches (the server adds them up), not only the lines loaded so far.
+    function paintTotals() {
+      if (!total || !totals.length) return mount(tots);
+      const stat = (label, value, cls, title) => h('span', { class: 'stat', title }, h('span', { class: 'muted small' }, label), ' ', h('span', { class: ['amount strong', cls] }, value));
+      mount(tots, totals.map((t) => h('div', { class: 't-totals', role: 'group', 'aria-label': 'Totals for every transaction in this view' },
+        h('span', { class: 'strong' }, 'Totals'), h('span', { class: 'muted small' }, 'all ' + plural(t.count, 'line') + ' in this view'),
+        stat('Spending', money(t.spending), '', 'What you spent, after employer coverage. Counted the way the reports count it.'),
+        stat('Income', money(t.income), t.income.minor > 0 && 'pos', 'What you received'),
+        stat('Net', money(t.net, { sign: true }), t.net.minor < 0 && 'neg', 'Income minus spending'),
+        t.not_counted > 0 && h('span', { class: 'muted small', title: 'Transfers, bank debits that pay a card statement, and employer-coverage lines are not spending or income: the purchases they pay for are counted instead.' },
+          plural(t.not_counted, 'line') + ' not counted · ' + money(t.not_counted_amount, { sign: true })),
+        h('span', { class: 'muted small spacer', title: 'The Amount column added up, signed, with nothing left out' }, 'All amounts added ' + money(t.sum, { sign: true })))));
     }
     function paintBulk() {
       if (!sel.size) return mount(bulk);
@@ -140,9 +153,9 @@ export default {
       const my = ++seq; loading = true;
       if (!keep) { sel.clear(); focus = -1; }
       try {
-        const r = await api.get('/api/v1/transactions', params({ limit: keep ? Math.max(PAGE, items.length) : PAGE }));
+        const r = await api.get('/api/v1/transactions', params({ limit: keep ? Math.max(PAGE, items.length) : PAGE, totals: 1 }));
         if (my !== seq) return;
-        items = r.items; total = r.total;
+        items = r.items; total = r.total; totals = r.totals || [];
       } catch (e) { mount(body); mount(foot, errorAlert(e, () => reload())); loading = false; return; }
       loading = false; paintRows();
       if (!items.length) mount(emptyHost, emptyState('search', 'No transactions match', T.review ? 'Nothing is waiting for review in this period.' : 'Try a wider period or fewer filters.', h('button', { class: 'btn sm', type: 'button', onclick: () => { Object.assign(T, { q: '', account: '', category: '', review: false }); ctx.content.dispatchEvent(new Event('x')); setFilters({}); } }, 'Clear filters')));
@@ -194,7 +207,7 @@ export default {
     stopKeys.observe(document.body, { childList: true, subtree: true });
 
     const emptyHost = h('div');
-    const card = h('div', { class: 'card flush' }, h('div', { class: 'table-wrap' }, table), emptyHost, foot);
+    const card = h('div', { class: 'card flush' }, h('div', { class: 'table-wrap' }, table), emptyHost, tots, foot);
     await reload();
     return h('div', { class: 'stack', style: { gap: 'var(--s-4)' } }, toolbar, card, bulk);
   },

@@ -141,6 +141,9 @@ Each report is a pure function over the `ledger_view` SQL view (migration 0003, 
 8. Card payoff and installment forecast (future installments projected month by month)
 9. Foreign-currency purchases (original vs. billed, implied rate, fees)
 10. Anomalies (per-category z-score/IQR outliers and new unusual recurring debits)
+11. Summary: the period at a glance. Income, spending, net and savings rate; what a month and a day typically cost (the period scaled to 30.4 days, so part-months compare); the median, costliest and cheapest of the *whole* months inside the period; the five largest payments and top categories; spending still uncategorized; and the same figures for the period of equal length just before, flagged incomplete when the data starts later. The period is trimmed to where the data begins. Bank debits that pay a card bill are one lump, not a purchase, and are left out of purchase counts and largest payments.
+
+**Transaction totals.** The transaction list can return totals over *every* matching line, not just the loaded page (`totals=1`): spending, income and net counted as the reports count them (out of pocket), the lines left out (transfers, bank debits that settle a card statement, employer coverage) with their signed sum, and the plain signed sum of all amounts. The owner filter applies to the list as it does to the reports.
 
 ## 8. Multi-currency (Phase 2)
 v1: all bank accounts are ILS. Foreign purchases on cards are shown with their original amount and currency next to the issuer-billed ILS amount.

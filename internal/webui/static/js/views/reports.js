@@ -13,6 +13,38 @@ const label = (c) => catName(state.catById.get(c.category_id) || { name_en: c.na
 const toTx = (id) => '/transactions?category=' + (id || 'uncategorized') + '&period=' + state.filters.period;
 
 const TABS = [
+  ['summary', 'Summary', async () => {
+    const r = await api.get('/api/v1/reports/summary', scope({ measure: state.filters.measure }));
+    const prev = r.previous && r.previous.complete ? r.previous : null;
+    const months = r.days / 30.4375;
+    const chg = (x, upIsGood) => x == null ? null : h('span', { class: ['delta', ((x >= 0) === upIsGood ? 'up-good' : 'up-bad')], title: 'Compared with ' + date(prev.from) + ' – ' + date(prev.to) },
+      icon(x >= 0 ? 'arrowup' : 'arrowdown', 'sm'), Math.abs(x * 100).toFixed(0) + '%', h('span', { class: 'muted', style: { fontWeight: 400 } }, ' vs the period before'));
+    const tile = (label, value, perMonth, delta) => h('div', { class: 'card tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value amount' }, money(value, { whole: true })),
+      h('div', { class: 'foot' }, delta || h('span', { class: 'muted small' }, '')), h('div', { class: 'muted small' }, perMonth));
+    const row = (k, v, hint) => [h('dt', { title: hint }, k), h('dd', null, v)];
+    const kv = [
+      ...row('Average month', money(r.per_month.spending, { whole: true }) + ' spent · ' + money(r.per_month.income, { whole: true }) + ' earned', 'The period scaled to a 30.4-day month, so it works for part-months too'),
+      ...row('Kept in an average month', money(r.per_month.net, { whole: true, sign: true })),
+      r.median_month_spending && row('Typical month (median)', money(r.median_month_spending, { whole: true }) + ' spent', 'Half the full months cost less, half more; one big month does not move it'),
+      ...row('Spending per day', money(r.spending_per_day, { whole: true })),
+      r.highest_spending_month && row('Costliest month', monthLong(r.highest_spending_month.month) + ' · ' + money(r.highest_spending_month.amount, { whole: true })),
+      r.lowest_spending_month && row('Cheapest month', monthLong(r.lowest_spending_month.month) + ' · ' + money(r.lowest_spending_month.amount, { whole: true })),
+      r.purchases > 0 && row('Average purchase', money(r.average_purchase) + ' over ' + plural(r.purchases, 'purchase'), 'Card bills paid from the bank are one lump, not a purchase, so they are left out'),
+    ].filter(Boolean).flat();
+    const note = r.complete_months === 0 ? 'No month in this period is over yet, so the averages are scaled from ' + plural(r.days, 'day') + '.' : plural(r.complete_months, 'full month') + ' counted for the costliest, cheapest and typical month.';
+    if (!r.income.minor && !r.spending.minor) return card('Summary', 'Nothing in this period', { toggle: null, body: emptyState('card', 'No transactions in this period', 'Try a longer period.') });
+    return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
+      h('div', { class: 'tiles' },
+        tile('Income', r.income, '≈ ' + money(r.per_month.income, { whole: true }) + ' a month', chg(prev?.income_change, true)),
+        tile('Spending', r.spending, '≈ ' + money(r.per_month.spending, { whole: true }) + ' a month', chg(prev?.spending_change, false)),
+        tile(r.net.minor >= 0 ? 'Kept' : 'Overspent', r.net, r.savings_rate == null ? 'No income in this period' : (r.savings_rate >= 0 ? 'You kept ' + pct(r.savings_rate) + ' of your income' : 'Spent ' + pct(-r.savings_rate) + ' more than you earned'))),
+      h('div', { class: 'grid' },
+        h('div', { class: 'span-6' }, card('A typical month', date(r.from) + ' – ' + date(r.to) + ' · ' + plural(r.days, 'day') + ' (about ' + months.toFixed(1) + ' months)', { toggle: null, body: h('div', { class: 'stack' }, h('dl', { class: 'kv' }, ...kv), h('div', { class: 'muted small' }, note)) })),
+        h('div', { class: 'span-6' }, card('Where it went', 'The five biggest categories · click one to see its transactions', { toggle: null, body: r.top_categories.length ? hbars(r.top_categories.map((c) => { const n = label(c); return { name: n.main, alt: n.alt, value: c.amount.minor, valueText: money(c.amount, { whole: true }), sub: pct(c.share) + ' · ' + money(c.per_month, { whole: true }) + '/mo', id: c.category_id }; }), { onPick: (it) => go(toTx(it.id)) }) : emptyState('tag', 'No spending', '') }))),
+      r.largest.length > 0 && card('Largest payments', 'The five biggest single charges in this period', { toggle: null, body: h('ul', { class: 'list' }, r.largest.map((b) => h('li', null, h('div', { class: 'grow', style: { minWidth: 0 } }, utBlock(b.payee, 'strong'), h('div', { class: 'muted small' }, date(b.date) + (b.category_name ? ' · ' + b.category_name : ''))), h('span', { class: 'amount strong' }, money(b.amount)),
+        h('a', { class: 'btn ghost sm', href: '#/transactions?q=' + encodeURIComponent(b.payee) + '&period=' + state.filters.period }, 'Find', icon('right', 'sm'))))) }),
+      r.uncategorized.count > 0 && h('div', { class: 'muted small' }, plural(r.uncategorized.count, 'purchase') + ' worth ' + money(r.uncategorized.amount, { whole: true }) + ' have no category yet. ', h('a', { href: '#/transactions?category=uncategorized&period=' + state.filters.period }, 'Review them')));
+  }],
   ['categories', 'Categories', async () => {
     const q = scope({ measure: state.filters.measure });
     const bd = await api.get('/api/v1/reports/category-breakdown', q); const items = bd.items;

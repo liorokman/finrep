@@ -187,7 +187,7 @@ func call(t *testing.T, c *client.Client, name string, args map[string]any) (map
 }
 
 var wantTools = []string{"get_account_summary", "get_cash_flow", "get_category_breakdown", "get_net_worth_trend", "get_recurring",
-	"get_statements", "list_accounts", "query_transactions"}
+	"get_statements", "get_summary", "list_accounts", "query_transactions"}
 
 func minor(v any) float64 { return v.(map[string]any)["minor"].(float64) }
 

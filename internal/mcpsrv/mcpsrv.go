@@ -67,6 +67,7 @@ func New(d Deps) *server.MCPServer {
 			mcp.WithNumber("offset", mcp.Description("Lines to skip"))), h.queryTransactions},
 		{reportTool("get_net_worth_trend", "Net worth at each month end: bank balances minus card charges not yet paid by a bank debit.", false), h.netWorth},
 		{reportTool("get_category_breakdown", "Spending by category with shares of the total, largest first.", true), h.breakdown},
+		{reportTool("get_summary", "The period at a glance: income, spending and net, what is typical per month and per day, the highest and lowest months, the largest purchases, the top categories and how it compares with the period before.", true), h.summary},
 		{reportTool("get_cash_flow", "Income, spending, net and savings rate for each month.", true), h.cashFlow},
 		{reportTool("get_recurring", "Payments that repeat weekly, monthly, quarterly or yearly, with typical amount, monthly cost and the next expected date.", true), h.recurring},
 		{mcp.NewTool("get_statements", mcp.WithDescription("Credit card statements (what is billed on one date for one card) with the bank debits that paid them, plus the upcoming bank outflow by day."),
@@ -274,6 +275,14 @@ func (t *tools) breakdown(ctx context.Context, r mcp.CallToolRequest) (*mcp.Call
 		return failure("get_category_breakdown", err)
 	}
 	return reply(map[string]any{"total": total, "categories": rows})
+}
+
+func (t *tools) summary(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sum, err := t.d.Reports.Summary(ctx, filterArgs(r))
+	if err != nil {
+		return failure("get_summary", err)
+	}
+	return reply(sum)
 }
 
 func (t *tools) cashFlow(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {

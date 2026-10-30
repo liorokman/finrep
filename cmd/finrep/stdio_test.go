@@ -57,7 +57,7 @@ func TestMCPStdioSubprocess(t *testing.T) {
 		t.Fatalf("initialize (stdout must carry only the protocol): %v", err)
 	}
 	tools, err := c.ListTools(cctx, mcp.ListToolsRequest{})
-	if err != nil || len(tools.Tools) != 8 {
+	if err != nil || len(tools.Tools) != 9 {
 		t.Fatalf("%d tools, %v", len(tools.Tools), err)
 	}
 	req := mcp.CallToolRequest{}
