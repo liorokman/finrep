@@ -26,6 +26,7 @@ type Config struct {
 	OIDCIssuer    string
 	OIDCClientID  string
 	OIDCRedirect  string
+	OIDCSecret    string // optional: public PKCE clients have none
 	SessionSecret []byte
 	MCPToken      string // empty disables the HTTP MCP endpoint
 	MaxUploadMB   int
@@ -113,6 +114,7 @@ func Load(args []string, env Env, usage io.Writer) (*Config, error) {
 		c.MCPToken = secret("MCP_TOKEN")
 	}
 	c.SessionSecret = []byte(sec)
+	c.OIDCSecret = secret("OIDC_CLIENT_SECRET")
 	c.LogLevel = strings.ToLower(c.LogLevel)
 	c.Mode = strings.ToLower(c.Mode)
 

@@ -3,17 +3,20 @@ module github.com/liorokman/finrep
 go 1.26.4
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/dslipak/pdf v0.0.2
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/mark3labs/mcp-go v0.57.0
 	golang.org/x/net v0.56.0
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/text v0.40.0
 	modernc.org/sqlite v1.56.0
 )
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect

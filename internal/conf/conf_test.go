@@ -131,3 +131,14 @@ func TestTrustedProxies(t *testing.T) {
 		t.Fatal("bad CIDR accepted")
 	}
 }
+
+func TestOIDCClientSecretIsOptionalAndFromFile(t *testing.T) {
+	c, err := load(t, map[string]string{"FINREP_SESSION_SECRET": secret32}, authOn...)
+	if err != nil || c.OIDCSecret != "" {
+		t.Fatalf("public client: %q %v", c.OIDCSecret, err)
+	}
+	c, err = load(t, map[string]string{"FINREP_SESSION_SECRET": secret32, "FINREP_OIDC_CLIENT_SECRET_FILE": "/run/o", "file:/run/o": "shh"}, authOn...)
+	if err != nil || c.OIDCSecret != "shh" {
+		t.Fatalf("%q %v", c.OIDCSecret, err)
+	}
+}
