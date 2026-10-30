@@ -31,6 +31,22 @@ try {
   check(await b.eval(`!!document.querySelector('.drawer')`), 'Enter opens the detail drawer');
   await b.key('Escape');
   check(await b.eval(`!document.querySelector('.drawer')`), 'Escape closes it');
+  // A custom date range, and comparing the summary with another period (previous, a year earlier, any dates).
+  await b.open(`${base}/?mock=1#/reports/summary`, 1800);
+  const seg = (t) => `[...document.querySelectorAll('.seg button')].find((x) => x.textContent.trim() === ${JSON.stringify(t)})`;
+  await b.eval(`localStorage.clear()`);
+  await b.open(`${base}/?mock=1#/reports/summary`, 1800);
+  check(await b.eval(`!!document.querySelector('.tiles') && document.body.textContent.includes('A typical month')`), 'the summary keeps its tiles and typical month');
+  check(await b.eval(`!!${seg('Range')}`), 'the period control offers a custom range');
+  await b.eval(`${seg('Range')}.click()`); await b.sleep(1200);
+  check(await b.eval(`document.querySelectorAll('input[type=date]').length === 2`), 'choosing it shows a start and an end date');
+  await b.eval(`(() => { const i = document.querySelectorAll('input[type=date]')[0]; i.value = '2026-03-01'; i.dispatchEvent(new Event('change', { bubbles: true })); })()`); await b.sleep(1200);
+  check(await b.eval(`document.querySelectorAll('input[type=date]')[0].value === '2026-03-01' && !!document.querySelector('.tiles')`), 'a changed start date keeps the page working');
+  for (const mode of ['Same time last year', 'Custom range', 'Previous period']) {
+    await b.eval(`${seg(mode)}.click()`); await b.sleep(1200);
+    check(await b.eval(`!document.querySelector('.alert.warn') && !!document.querySelector('.tiles')`), `compare with: ${mode}`);
+  }
+  check(await b.eval(`document.body.textContent.includes('How it compares') || document.body.textContent.includes('Nothing to compare')`), 'a comparison, or a clear note that there is none');
   await b.open(`${base}/?mock=1&theme=dark#/overview`, 1500);
   check(await b.eval(`document.documentElement.getAttribute('data-theme') === 'dark'`), 'dark theme applies');
 } catch (e) { console.error(e); failed++; } finally { await b.close(); }

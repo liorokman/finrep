@@ -1,8 +1,8 @@
 import { h, mount, $ } from './dom.js';
 import { icon } from './icons.js';
 import { api, setCSRF, todayISO, ApiError } from './api.js';
-import { state, setReference, setFilters, subscribe, owners, PERIODS } from './state.js';
-import { segmented, selectField, errorAlert, skeleton } from './ui.js';
+import { state, setReference, setFilters, subscribe, owners, PERIODS, periodRange, choosePeriod } from './state.js';
+import { segmented, selectField, dateField, errorAlert, skeleton } from './ui.js';
 
 const params = new URLSearchParams(location.search);
 if (params.has('mock')) { try { localStorage.setItem('finrep.mock', params.get('mock') === '0' ? '' : '1'); } catch (e) { /* ignore */ } }
@@ -74,10 +74,20 @@ export function refreshBadges() {
   return api.get('/api/v1/transactions', { needs_review: true, limit: 1 }).then((r) => { badges.transactions = r.total; drawNav(); }).catch(() => {});
 }
 
+// The two dates of the custom range. Moving one past the other drags the other along.
+function rangeFields() {
+  const { from, to } = periodRange();
+  const lim = { min: '2023-01-01', max: state.today };
+  return h('div', { class: 'row', style: { gap: 'var(--s-3)', alignItems: 'flex-end' } },
+    dateField('From', from, (v) => setFilters({ from: v, to: to < v ? v : to }), lim),
+    dateField('To', to, (v) => setFilters({ to: v, from: from > v ? v : from }), lim));
+}
+
 function drawFilters(v) {
   const want = v.filters || [];
   mount(filtersEl, [
-    want.includes('period') && h('div', { class: 'field' }, h('span', { class: 'label' }, 'Period'), segmented('Period', PERIODS, state.filters.period, (p) => setFilters({ period: p }))),
+    want.includes('period') && h('div', { class: 'field' }, h('span', { class: 'label' }, 'Period'), segmented('Period', PERIODS, state.filters.period, choosePeriod)),
+    want.includes('period') && state.filters.period === 'range' && rangeFields(),
     want.includes('owner') && owners().length > 1 && selectField('Whose', [{ value: '', label: 'Everyone' }, ...owners().map((o) => ({ value: o, label: o }))], state.filters.owner, (o) => setFilters({ owner: o })),
     want.includes('measure') && h('div', { class: 'field' }, h('span', { class: 'label' }, 'Amounts'),
       segmented('Amounts', [{ value: 'GROSS', label: 'As bought' }, { value: 'OUT_OF_POCKET', label: 'Out of pocket' }], state.filters.measure, (m) => setFilters({ measure: m }))),

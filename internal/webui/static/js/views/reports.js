@@ -1,10 +1,10 @@
 import { h, ut, utBlock } from '../dom.js';
 import { icon } from '../icons.js';
 import { api } from '../api.js';
-import { state, scope, catName, periodRange } from '../state.js';
+import { state, scope, catName, periodRange, setPrefs } from '../state.js';
 import { money, compact, amount, pct, date, monthShort, monthLong, plural } from '../format.js';
 import { columns, lines, hbars, heatmap, legend, SERIES } from '../charts.js';
-import { chartTable, simpleTable, emptyState, statusBadge, segmented } from '../ui.js';
+import { chartTable, simpleTable, emptyState, statusBadge, segmented, dateField } from '../ui.js';
 import { go } from '../main.js';
 
 const cur = 'ILS';
@@ -14,11 +14,19 @@ const toTx = (id) => '/transactions?category=' + (id || 'uncategorized') + '&per
 
 const TABS = [
   ['summary', 'Summary', async () => {
-    const r = await api.get('/api/v1/reports/summary', scope({ measure: state.filters.measure }));
-    const prev = r.previous && r.previous.complete ? r.previous : null;
+    // What to compare with is remembered; the dates only matter for a custom range.
+    const cp = state.prefs.compare || { mode: 'previous', from: '', to: '' }, mode = cp.mode;
+    const cmpQ = mode === 'year' ? { compare: 'year' } : mode === 'custom' && cp.from && cp.to ? { compare_from: cp.from, compare_to: cp.to } : {};
+    const r = await api.get('/api/v1/reports/summary', scope({ measure: state.filters.measure, ...cmpQ }));
+    const cmp = r.comparison;
     const months = r.days / 30.4375;
-    const chg = (x, upIsGood) => x == null ? null : h('span', { class: ['delta', ((x >= 0) === upIsGood ? 'up-good' : 'up-bad')], title: 'Compared with ' + date(prev.from) + ' – ' + date(prev.to) },
-      icon(x >= 0 ? 'arrowup' : 'arrowdown', 'sm'), Math.abs(x * 100).toFixed(0) + '%', h('span', { class: 'muted', style: { fontWeight: 400 } }, ' vs the period before'));
+    const span = (a, b) => date(a) + ' – ' + date(b);
+    // A comparison with a period the data only partly covers would flatter or punish this one, so it is not
+    // shown in the tiles unless it was asked for by dates.
+    const shown = cmp && (cmp.complete || mode === 'custom');
+    const vs = mode === 'year' ? 'vs a year earlier' : mode === 'custom' && cmp ? 'vs ' + span(cmp.from, cmp.to) : 'vs the period before';
+    const chg = (x, upIsGood) => x == null ? null : h('span', { class: ['delta', ((x >= 0) === upIsGood ? 'up-good' : 'up-bad')], title: 'Compared with ' + span(cmp.from, cmp.to) },
+      icon(x >= 0 ? 'arrowup' : 'arrowdown', 'sm'), Math.abs(x * 100).toFixed(0) + '%', h('span', { class: 'muted', style: { fontWeight: 400 } }, ' ' + vs));
     const tile = (label, value, perMonth, delta) => h('div', { class: 'card tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value amount' }, money(value, { whole: true })),
       h('div', { class: 'foot' }, delta || h('span', { class: 'muted small' }, '')), h('div', { class: 'muted small' }, perMonth));
     const row = (k, v, hint) => [h('dt', { title: hint }, k), h('dd', null, v)];
@@ -32,15 +40,60 @@ const TABS = [
       r.purchases > 0 && row('Average purchase', money(r.average_purchase) + ' over ' + plural(r.purchases, 'purchase'), 'Card bills paid from the bank are one lump, not a purchase, so they are left out'),
     ].filter(Boolean).flat();
     const note = r.complete_months === 0 ? 'No month in this period is over yet, so the averages are scaled from ' + plural(r.days, 'day') + '.' : plural(r.complete_months, 'full month') + ' counted for the costliest, cheapest and typical month.';
-    if (!r.income.minor && !r.spending.minor) return card('Summary', 'Nothing in this period', { toggle: null, body: emptyState('card', 'No transactions in this period', 'Try a longer period.') });
+
+    // ----- what to compare with -----
+    const setCmp = (patch) => setPrefs({ compare: { ...cp, ...patch } });
+    const lim = { min: '2023-01-01', max: state.today };
+    const controls = h('div', { class: 'row wrap', style: { gap: 'var(--s-4)', alignItems: 'flex-end' } },
+      h('div', { class: 'field' }, h('span', { class: 'label' }, 'Compare with'),
+        segmented('Compare with', [{ value: 'previous', label: 'Previous period' }, { value: 'year', label: 'Same time last year' }, { value: 'custom', label: 'Custom range' }], mode,
+          (m) => setCmp(m === 'custom' && !(cp.from && cp.to) && cmp ? { mode: m, from: cmp.from, to: cmp.to } : { mode: m }))),
+      mode === 'custom' && dateField('From', cp.from, (v) => setCmp({ from: v, to: cp.to && cp.to < v ? v : cp.to }), lim),
+      mode === 'custom' && dateField('To', cp.to, (v) => setCmp({ to: v, from: cp.from && cp.from > v ? v : cp.from }), lim),
+      h('span', { class: 'muted small', style: { paddingBottom: '8px' } }, cmp ? 'Comparing ' + span(r.from, r.to) + ' with ' + span(cmp.from, cmp.to) + (cmp.complete ? '' : ' (the data does not cover all of it)') : mode === 'custom' ? 'Pick the dates of the other period' : 'Nothing to compare with before this period'));
+
+    // ----- the comparison -----
+    const none = h('span', { class: 'muted' }, '–');
+    const diff = (now, then, upIsGood) => now === then ? none : h('span', { class: ['amount', (now > then) === upIsGood ? 'pos' : 'neg'] }, money({ minor: now - then, currency: cur }, { whole: true, sign: true }));
+    const pc = (x, upIsGood) => x == null ? none : h('span', { class: ['amount', (x >= 0) === upIsGood ? 'pos' : 'neg'] }, (x >= 0 ? '+' : '−') + Math.abs(x * 100).toFixed(0) + '%');
+    const amt = (m) => h('span', { class: 'amount' }, money(m, { whole: true }));
+    let comparison = null;
+    if (cmp) {
+      const rate = (x) => x == null ? none : h('span', { class: 'amount' }, pct(x));
+      const rateDiff = r.savings_rate == null || cmp.savings_rate == null ? none : (() => { const d = (r.savings_rate - cmp.savings_rate) * 100; return d === 0 ? none : h('span', { class: ['amount', d > 0 ? 'pos' : 'neg'] }, (d > 0 ? '+' : '−') + Math.abs(d).toFixed(1) + ' pts'); })();
+      const head = simpleTable([{ label: '' }, { label: date(r.from, { year: true }) + ' – ' + date(r.to, { year: true }), num: true }, { label: span(cmp.from, cmp.to), num: true }, { label: 'Change', num: true }, { label: '', num: true }], [
+        ['Income', amt(r.income), amt(cmp.income), diff(r.income.minor, cmp.income.minor, true), pc(cmp.income_change, true)],
+        ['Spending', amt(r.spending), amt(cmp.spending), diff(r.spending.minor, cmp.spending.minor, false), pc(cmp.spending_change, false)],
+        ['Kept', amt(r.net), amt(cmp.net), diff(r.net.minor, cmp.net.minor, true), pc(cmp.net_change, true)],
+        ['Share of income kept', rate(r.savings_rate), rate(cmp.savings_rate), rateDiff, none],
+        ['Spending in an average month', amt(r.per_month.spending), amt(cmp.per_month.spending), diff(r.per_month.spending.minor, cmp.per_month.spending.minor, false), pc(cmp.per_month.spending.minor ? (r.per_month.spending.minor - cmp.per_month.spending.minor) / cmp.per_month.spending.minor : null, false)],
+        ['Spending per day', amt(r.spending_per_day), amt(cmp.spending_per_day), diff(r.spending_per_day.minor, cmp.spending_per_day.minor, false), pc(cmp.spending_per_day.minor ? (r.spending_per_day.minor - cmp.spending_per_day.minor) / cmp.spending_per_day.minor : null, false)],
+      ]);
+      const cats = cmp.categories.slice(0, 12);
+      const what = simpleTable([{ label: 'Category' }, { label: 'This period', num: true }, { label: 'Compared', num: true }, { label: 'Change', num: true }, { label: '', num: true }],
+        cats.map((c) => [h('span', null, ut(label(c).main), label(c).alt && [' ', h('span', { class: 'muted' }, ut(label(c).alt))]), amt(c.current), amt(c.other), diff(c.current.minor, c.other.minor, false), pc(c.change_pct, false)]));
+      const ms = cmp.months;
+      const ser = [{ name: 'This period', color: SERIES[0], values: ms.map((m) => m.spending.minor) }, { name: 'Compared period', color: SERIES[1], values: ms.map((m) => m.other_spending.minor) }];
+      const monthsView = ms.length > 1 ? chartTable(
+        () => h('div', { class: 'stack' }, legend(ser.map((x) => ({ color: x.color, label: x.name }))), columns({ labels: ms.map((m) => monthShort(m.month || m.other_month)), groupLabels: ms.map((m) => (m.month ? monthLong(m.month) : '–') + ' vs ' + (m.other_month ? monthLong(m.other_month) : '–')), series: ser, height: 240 })),
+        () => simpleTable([{ label: 'This period' }, { label: 'Spending', num: true }, { label: 'Compared month' }, { label: 'Spending', num: true }, { label: 'Change', num: true }],
+          ms.map((m) => [m.month ? monthLong(m.month) : '–', amt(m.spending), m.other_month ? monthLong(m.other_month) : '–', amt(m.other_spending), diff(m.spending.minor, m.other_spending.minor, false)]))) : null;
+      comparison = h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
+        card('How it compares', span(r.from, r.to) + ' against ' + span(cmp.from, cmp.to) + ' · green is better, red is worse', { toggle: null, body: head }),
+        monthsView && card('Month by month', 'Spending, the first month of each period against the first of the other, and so on', monthsView),
+        cats.length > 0 && card('What changed', cmp.categories.length > cats.length ? 'The ' + cats.length + ' biggest changes of ' + cmp.categories.length + ' categories' : 'Spending by category, the biggest change first', { toggle: null, body: what }));
+    }
+    if (!r.income.minor && !r.spending.minor && !cmp) return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } }, controls, card('Summary', 'Nothing in this period', { toggle: null, body: emptyState('card', 'No transactions in this period', 'Try a longer period.') }));
     return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
+      controls,
       h('div', { class: 'tiles' },
-        tile('Income', r.income, '≈ ' + money(r.per_month.income, { whole: true }) + ' a month', chg(prev?.income_change, true)),
-        tile('Spending', r.spending, '≈ ' + money(r.per_month.spending, { whole: true }) + ' a month', chg(prev?.spending_change, false)),
+        tile('Income', r.income, '≈ ' + money(r.per_month.income, { whole: true }) + ' a month', shown ? chg(cmp.income_change, true) : null),
+        tile('Spending', r.spending, '≈ ' + money(r.per_month.spending, { whole: true }) + ' a month', shown ? chg(cmp.spending_change, false) : null),
         tile(r.net.minor >= 0 ? 'Kept' : 'Overspent', r.net, r.savings_rate == null ? 'No income in this period' : (r.savings_rate >= 0 ? 'You kept ' + pct(r.savings_rate) + ' of your income' : 'Spent ' + pct(-r.savings_rate) + ' more than you earned'))),
       h('div', { class: 'grid' },
         h('div', { class: 'span-6' }, card('A typical month', date(r.from) + ' – ' + date(r.to) + ' · ' + plural(r.days, 'day') + ' (about ' + months.toFixed(1) + ' months)', { toggle: null, body: h('div', { class: 'stack' }, h('dl', { class: 'kv' }, ...kv), h('div', { class: 'muted small' }, note)) })),
         h('div', { class: 'span-6' }, card('Where it went', 'The five biggest categories · click one to see its transactions', { toggle: null, body: r.top_categories.length ? hbars(r.top_categories.map((c) => { const n = label(c); return { name: n.main, alt: n.alt, value: c.amount.minor, valueText: money(c.amount, { whole: true }), sub: pct(c.share) + ' · ' + money(c.per_month, { whole: true }) + '/mo', id: c.category_id }; }), { onPick: (it) => go(toTx(it.id)) }) : emptyState('tag', 'No spending', '') }))),
+      comparison,
       r.largest.length > 0 && card('Largest payments', 'The five biggest single charges in this period', { toggle: null, body: h('ul', { class: 'list' }, r.largest.map((b) => h('li', null, h('div', { class: 'grow', style: { minWidth: 0 } }, utBlock(b.payee, 'strong'), h('div', { class: 'muted small' }, date(b.date) + (b.category_name ? ' · ' + b.category_name : ''))), h('span', { class: 'amount strong' }, money(b.amount)),
         h('a', { class: 'btn ghost sm', href: '#/transactions?q=' + encodeURIComponent(b.payee) + '&period=' + state.filters.period }, 'Find', icon('right', 'sm'))))) }),
       r.uncategorized.count > 0 && h('div', { class: 'muted small' }, plural(r.uncategorized.count, 'purchase') + ' worth ' + money(r.uncategorized.amount, { whole: true }) + ' have no category yet. ', h('a', { href: '#/transactions?category=uncategorized&period=' + state.filters.period }, 'Review them')));

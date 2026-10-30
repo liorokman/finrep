@@ -67,7 +67,7 @@ func New(d Deps) *server.MCPServer {
 			mcp.WithNumber("offset", mcp.Description("Lines to skip"))), h.queryTransactions},
 		{reportTool("get_net_worth_trend", "Net worth at each month end: bank balances minus card charges not yet paid by a bank debit.", false), h.netWorth},
 		{reportTool("get_category_breakdown", "Spending by category with shares of the total, largest first.", true), h.breakdown},
-		{reportTool("get_summary", "The period at a glance: income, spending and net, what is typical per month and per day, the highest and lowest months, the largest purchases, the top categories and how it compares with the period before.", true), h.summary},
+		{withCompare(reportTool("get_summary", "The period at a glance: income, spending and net, what is typical per month and per day, the highest and lowest months, the largest purchases, the top categories, and a comparison with another period (by default the one just before; compare=year for year over year, or compare_from and compare_to for any range), with the change per category and per month.", true)), h.summary},
 		{reportTool("get_cash_flow", "Income, spending, net and savings rate for each month.", true), h.cashFlow},
 		{reportTool("get_recurring", "Payments that repeat weekly, monthly, quarterly or yearly, with typical amount, monthly cost and the next expected date.", true), h.recurring},
 		{mcp.NewTool("get_statements", mcp.WithDescription("Credit card statements (what is billed on one date for one card) with the bank debits that paid them, plus the upcoming bank outflow by day."),
@@ -80,6 +80,18 @@ func New(d Deps) *server.MCPServer {
 		s.AddTool(t.tool, t.handler)
 	}
 	return s
+}
+
+// withCompare adds the parameters that choose what the summary is compared with.
+func withCompare(t mcp.Tool) mcp.Tool {
+	for _, o := range []mcp.ToolOption{
+		mcp.WithString("compare", mcp.Description("What to compare with: previous (default; the period just before, by whole months or years when the period is) or year (the same dates a year earlier)"), mcp.Enum("previous", "year")),
+		mcp.WithString("compare_from", mcp.Description("Start of any other period to compare with, YYYY-MM-DD (use with compare_to; overrides compare)")),
+		mcp.WithString("compare_to", mcp.Description("End of that period, YYYY-MM-DD")),
+	} {
+		o(&t)
+	}
+	return t
 }
 
 // reportTool declares a report tool with the shared filter parameters.
@@ -148,6 +160,7 @@ func filterArgs(r mcp.CallToolRequest) reports.Filter {
 		Owner: r.GetString("owner", ""), From: r.GetString("from", ""), To: r.GetString("to", ""),
 		Basis:   reports.Basis(strings.ToUpper(r.GetString("basis", ""))),
 		Measure: reports.Measure(strings.ToUpper(r.GetString("measure", ""))),
+		Compare: strings.ToLower(r.GetString("compare", "")), CompareFrom: r.GetString("compare_from", ""), CompareTo: r.GetString("compare_to", ""),
 	}
 	if id := r.GetString("account_id", ""); id != "" {
 		f.AccountIDs = []string{id}

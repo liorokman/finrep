@@ -288,7 +288,8 @@ func filterFromQuery(r *http.Request) reports.Filter {
 	q := r.URL.Query()
 	return reports.Filter{AccountIDs: q["account_id"], Owner: q.Get("owner"), CategoryIDs: q["category_id"], From: q.Get("from"), To: q.Get("to"),
 		Basis: reports.Basis(strings.ToUpper(q.Get("basis"))), Measure: reports.Measure(strings.ToUpper(q.Get("measure"))),
-		Currency: money.Currency(strings.ToUpper(q.Get("currency")))}
+		Currency: money.Currency(strings.ToUpper(q.Get("currency"))),
+		Compare:  strings.ToLower(q.Get("compare")), CompareFrom: q.Get("compare_from"), CompareTo: q.Get("compare_to")}
 }
 
 type reportFn func(ctx context.Context, rs *reports.Service, f reports.Filter) (any, error)

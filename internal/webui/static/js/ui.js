@@ -124,6 +124,13 @@ export function selectField(label, options, value, onChange) {
   return h('div', { class: 'field' }, h('label', { for: id }, label), sel);
 }
 
+// A labelled date picker. onChange gets YYYY-MM-DD, and is not called for a cleared field.
+export function dateField(label, value, onChange, { min, max } = {}) {
+  const id = uid('f');
+  const input = h('input', { class: 'input', id, type: 'date', value: value || '', min, max, onchange: (e) => { if (e.target.value) onChange(e.target.value); } });
+  return h('div', { class: 'field' }, h('label', { for: id }, label), input);
+}
+
 export function searchBox(placeholder, value, onInput) {
   let t;
   return h('div', { class: 'input-wrap' }, icon('search', 'sm'),

@@ -43,6 +43,12 @@ type Filter struct {
 	Basis       Basis
 	Measure     Measure
 	Currency    money.Currency // default ILS; v1 reports one currency at a time
+
+	// The summary report compares its period with another. An explicit range (both dates) wins; otherwise
+	// Compare is "previous" (the default: the period just before, by whole months or years when the period
+	// is made of them) or "year" (the same dates one year earlier). Other reports ignore these.
+	Compare                string
+	CompareFrom, CompareTo string
 }
 
 // Service runs reports.
@@ -89,6 +95,23 @@ func (f Filter) validate() error {
 	}
 	if f.From != "" && f.To != "" && f.From > f.To {
 		return invalid("from is after to")
+	}
+	if err := validDate("compare_from", f.CompareFrom); err != nil {
+		return err
+	}
+	if err := validDate("compare_to", f.CompareTo); err != nil {
+		return err
+	}
+	if (f.CompareFrom == "") != (f.CompareTo == "") {
+		return invalid("compare_from and compare_to go together")
+	}
+	if f.CompareFrom > f.CompareTo {
+		return invalid("compare_from is after compare_to")
+	}
+	switch f.Compare {
+	case "", "previous", "year":
+	default:
+		return invalid("unknown compare %q (previous or year)", f.Compare)
 	}
 	switch f.Basis {
 	case "", ByPurchase, ByBill:

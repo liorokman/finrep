@@ -7,7 +7,7 @@ const listeners = new Map();
 export const state = {
   me: null, today: '', mock: false,
   accounts: [], categories: [], accById: new Map(), catById: new Map(),
-  filters: { period: '12m', owner: '', measure: 'GROSS' },
+  filters: { period: '12m', owner: '', measure: 'GROSS', from: '', to: '' }, // from and to are the custom range, used by the 'range' period
   prefs: { catLang: 'en', dense: false },
 };
 
@@ -31,12 +31,17 @@ export function setReference(accounts, categories) {
   emit('reference');
 }
 
+// Choose a period. Switching to the custom range starts from the dates being shown, so nothing jumps.
+export function choosePeriod(p) {
+  if (p === 'range') { const r = periodRange(); setFilters({ period: 'range', from: r.from, to: r.to }); } else setFilters({ period: p });
+}
+
 export const owners = () => [...new Set(state.accounts.map((a) => a.owner).filter(Boolean))].sort();
 export const cards = () => state.accounts.filter((a) => a.type === 'CREDIT_CARD');
 
 export const PERIODS = [
   { value: 'm', label: 'This month' }, { value: '3m', label: '3 months' }, { value: '6m', label: '6 months' },
-  { value: '12m', label: '12 months' }, { value: 'ytd', label: 'This year' }, { value: 'all', label: 'All' },
+  { value: '12m', label: '12 months' }, { value: 'ytd', label: 'This year' }, { value: 'all', label: 'All' }, { value: 'range', label: 'Range' },
 ];
 
 // The date range a period preset stands for, ending today.
@@ -48,6 +53,7 @@ export function periodRange(period = state.filters.period, today = state.today) 
     case '6m': return { from: first(addMonths(today, -5)), to: today };
     case '12m': return { from: first(addMonths(today, -11)), to: today };
     case 'ytd': return { from: today.slice(0, 4) + '-01-01', to: today };
+    case 'range': { const a = state.filters.from || '2023-01-01', b = state.filters.to || today; return a <= b ? { from: a, to: b } : { from: b, to: a }; }
     default: return { from: '2023-01-01', to: today };
   }
 }

@@ -49,10 +49,13 @@ tasks:
     cmds:
       - |
         go build -o /tmp/finrep-uitest ./cmd/finrep
+        # a server left over from an earlier run would be tested instead of this build
+        /usr/bin/env pkill -x finrep-uitest 2>/dev/null || true
         /tmp/finrep-uitest --auth=off --port=18091 --db-path=$(mktemp -d)/f.db >/dev/null 2>&1 &
-        pid=$!; sleep 1
+        sleep 1
         node internal/webui/uitest/smoke.mjs http://127.0.0.1:18091; rc=$?
-        kill $pid; exit $rc
+        /usr/bin/env pkill -x finrep-uitest 2>/dev/null || true
+        exit $rc
 
   test-race:
     desc: Run all Go tests with the race detector

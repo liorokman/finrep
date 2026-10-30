@@ -219,11 +219,44 @@ function report(name, p) {
     const buys = scoped({ ...p, from, to }).filter((t) => flow(t) === 'S' && value(t, measure) > 0 && !(t.account_id === 'acc_bank' && /כרטיסי אשראי|ישראכרט|מאסטרקרד/.test(t.payee_raw)));
     const bd = report('category-breakdown', { ...p, from, to, measure });
     const unc = scoped({ ...p, from, to }).filter((t) => flow(t) === 'S' && !t.category_id);
-    let previous = null;
-    if (p.from) {
-      const pTo = isoOf(dayN(from) - 1), pFrom = isoOf(dayN(from) - days);
-      const pv = sums(pFrom, pTo);
-      if (pv.i || pv.sp) previous = { from: pFrom, to: pTo, income: M(pv.i), spending: M(pv.sp), net: M(pv.i - pv.sp), complete: pFrom >= first.slice(0, 7) + '-01', income_change: pv.i ? (inc - pv.i) / Math.abs(pv.i) : null, spending_change: pv.sp ? (spend - pv.sp) / Math.abs(pv.sp) : null };
+    // The period to compare with: asked for by dates, a year earlier, or the one before (by whole months or years).
+    const toD = (iso) => new Date(iso + 'T00:00:00Z'), fmt = (d) => d.toISOString().slice(0, 10);
+    const lastOf = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+    const yearsAgo = (iso) => fmt(new Date(Date.UTC(+iso.slice(0, 4) - 1, +iso.slice(5, 7) - 1, +iso.slice(8, 10))));
+    function previousRange(a, b) {
+      const n = Math.round((b - a) / 864e5) + 1;
+      if (a.getUTCDate() === 1) {
+        const k = (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + b.getUTCMonth() - a.getUTCMonth() + 1;
+        if (a.getUTCMonth() === 0 && k <= 12) return [yearsAgo(fmt(a)), yearsAgo(fmt(b))];
+        const pf = new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() - k, 1));
+        let pt = new Date(+pf + (n - 1) * 864e5); const limit = lastOf(new Date(Date.UTC(pf.getUTCFullYear(), pf.getUTCMonth() + k - 1, 1)));
+        if (+b === +lastOf(b) || pt > limit) pt = limit;
+        return [fmt(pf), fmt(pt)];
+      }
+      const pt = new Date(+a - 864e5); return [fmt(new Date(+pt - (n - 1) * 864e5)), fmt(pt)];
+    }
+    const explicit = !!(p.compare_from && p.compare_to);
+    const [cFrom, cTo] = explicit ? [p.compare_from, p.compare_to] : p.compare === 'year' ? [yearsAgo(from), yearsAgo(to)] : previousRange(toD(from), toD(to));
+    let comparison = null;
+    const pv = sums(cFrom, cTo);
+    if (explicit || pv.i || pv.sp) {
+      const cDays = dayN(cTo) - dayN(cFrom) + 1, om = (v) => Math.round(v * 30.4375 / cDays);
+      const ratio = (a, b) => (b ? (a - b) / Math.abs(b) : null);
+      const now = report('category-breakdown', { ...p, from, to, measure }).items, then = report('category-breakdown', { ...p, from: cFrom, to: cTo, measure }).items;
+      const byCat = new Map();
+      for (const c of now) byCat.set(c.category_id, { category_id: c.category_id, name_en: c.name_en, name_he: c.name_he, cur: c.amount.minor, other: 0 });
+      for (const c of then) { const x = byCat.get(c.category_id) || { category_id: c.category_id, name_en: c.name_en, name_he: c.name_he, cur: 0, other: 0 }; x.other = c.amount.minor; byCat.set(c.category_id, x); }
+      const categories = [...byCat.values()].map((x) => ({ category_id: x.category_id, name_en: x.name_en, name_he: x.name_he, current: M(x.cur), other: M(x.other), change: M(x.cur - x.other), change_pct: ratio(x.cur, x.other) }))
+        .sort((a, b) => Math.abs(b.change.minor) - Math.abs(a.change.minor) || (a.name_en < b.name_en ? -1 : 1));
+      const flowBy = (a, b) => { const m = {}; for (const x of report('cash-flow', { ...p, from: a, to: b, measure }).items) m[x.month] = x; return m; };
+      const am = monthsBetween(from.slice(0, 7), to.slice(0, 7)), bm = monthsBetween(cFrom.slice(0, 7), cTo.slice(0, 7)), fa = flowBy(from, to), fb = flowBy(cFrom, cTo);
+      const mths = []; for (let i = 0; i < Math.max(am.length, bm.length); i++) {
+        const x = am[i] && fa[am[i]], y = bm[i] && fb[bm[i]];
+        mths.push({ position: i + 1, month: am[i] || '', other_month: bm[i] || '', spending: x ? x.spending : M(0), other_spending: y ? y.spending : M(0), income: x ? x.income : M(0), other_income: y ? y.income : M(0) });
+      }
+      comparison = { from: cFrom, to: cTo, days: cDays, complete: cFrom >= first.slice(0, 7) + '-01' && cTo <= TODAY, income: M(pv.i), spending: M(pv.sp), net: M(pv.i - pv.sp), savings_rate: pv.i > 0 ? (pv.i - pv.sp) / pv.i : null,
+        per_month: { income: M(om(pv.i)), spending: M(om(pv.sp)), net: M(om(pv.i - pv.sp)) }, spending_per_day: M(Math.round(pv.sp / cDays)),
+        income_change: ratio(inc, pv.i), spending_change: ratio(spend, pv.sp), net_change: ratio(inc - spend, pv.i - pv.sp), categories, months: mths };
     }
     return { from, to, days, income: M(inc), spending: M(spend), net: M(inc - spend), savings_rate: inc > 0 ? (inc - spend) / inc : null,
       per_month: { income: M(perMonth(inc)), spending: M(perMonth(spend)), net: M(perMonth(inc - spend)) }, spending_per_day: M(Math.round(spend / days)),
@@ -232,7 +265,7 @@ function report(name, p) {
       purchases: buys.length, average_purchase: M(buys.length ? Math.round(buys.reduce((s, t) => s + value(t, measure), 0) / buys.length) : 0),
       largest: buys.sort((a, b) => value(b, measure) - value(a, measure)).slice(0, 5).map((t) => ({ transaction_id: t.id, date: t.date, payee: t.payee_raw, amount: M(value(t, measure)), category_id: t.category_id || '', category_name: (catOf(t) || {}).name_en || '' })),
       top_categories: bd.items.slice(0, 5).map((c) => ({ category_id: c.category_id, name_en: c.name_en, name_he: c.name_he, amount: c.amount, share: c.share, per_month: M(perMonth(c.amount.minor)) })),
-      uncategorized: { count: unc.length, amount: M(unc.reduce((s, t) => s + value(t, measure), 0)) }, previous };
+      uncategorized: { count: unc.length, amount: M(unc.reduce((s, t) => s + value(t, measure), 0)) }, comparison };
   }
   if (name === 'category-breakdown') {
     const by = {}; let total = 0;

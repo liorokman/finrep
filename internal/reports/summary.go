@@ -47,18 +47,52 @@ type MonthlyAverages struct {
 	Net      money.Money
 }
 
-// PeriodTotals are the totals of another period, for comparison.
-type PeriodTotals struct {
-	From     string
-	To       string
-	Income   money.Money
-	Spending money.Money
-	Net      money.Money
-	// Complete is false when the data does not cover the whole earlier period (it began later), so the
-	// comparison would flatter or punish the present one.
-	Complete       bool
-	IncomeChange   *float64 // fraction, 0.1 = up 10%; nil when the earlier figure is zero
+// CategoryChange is how one category's spending differs between the period and the one it is compared with.
+type CategoryChange struct {
+	CategoryID string
+	NameEN     string
+	NameHE     string
+	Current    money.Money // this period
+	Other      money.Money // the compared period
+	Change     money.Money // current minus other; positive means more spending now
+	ChangePct  *float64    // as a fraction of the other; nil when the other is zero
+}
+
+// ComparedMonth lines up one month of the period with the month in the same position of the compared one
+// (the first with the first, and so on), so a year can be set against another year.
+type ComparedMonth struct {
+	Position      int    // 1-based
+	Month         string // YYYY-MM in this period; empty when it has fewer months
+	OtherMonth    string // YYYY-MM in the compared period; empty when it has fewer months
+	Spending      money.Money
+	OtherSpending money.Money
+	Income        money.Money
+	OtherIncome   money.Money
+}
+
+// Comparison sets the period against another one, by default the period just before.
+type Comparison struct {
+	From string
+	To   string
+	Days int
+	// Complete is false when the data does not cover the whole compared period (it began later, or the period
+	// is not over), so the comparison would flatter or punish the present one.
+	Complete bool
+
+	Income         money.Money
+	Spending       money.Money
+	Net            money.Money
+	SavingsRate    *float64
+	PerMonth       MonthlyAverages
+	SpendingPerDay money.Money
+
+	// Changes are fractions of the compared period's figure (0.1 = 10% more now); nil when that is zero.
+	IncomeChange   *float64
 	SpendingChange *float64
+	NetChange      *float64
+
+	Categories []CategoryChange // every category in either period, the biggest change first
+	Months     []ComparedMonth
 }
 
 // UncategorizedSpending is spending nobody has put in a category yet.
@@ -97,7 +131,7 @@ type Summary struct {
 
 	TopCategories []TopCategory
 	Uncategorized UncategorizedSpending
-	Previous      *PeriodTotals // nil for "all time" or when there is nothing before
+	Comparison    *Comparison // nil when there is nothing to compare with
 }
 
 func ratio(now, before int64) *float64 {
@@ -285,36 +319,11 @@ func (s *Service) Summary(ctx context.Context, f Filter) (*Summary, error) {
 	}
 	out.Uncategorized.Amount = q.money(un)
 
-	// The period just before, as long as this one is bounded.
-	if f.From != "" && lo != "" {
-		// Where the data begins overall, not within this period: it says whether the earlier period is whole.
-		all := f
-		all.From, all.To = "", ""
-		aq, err := all.compile(OutOfPocket)
-		if err != nil {
-			return nil, err
-		}
-		dataStart, _, err := s.monthBounds(ctx, aq)
-		if err != nil {
-			return nil, err
-		}
-		pTo := start.AddDate(0, 0, -1)
-		pFrom := pTo.AddDate(0, 0, -(days - 1))
-		pf := f
-		pf.From, pf.To = pFrom.Format("2006-01-02"), pTo.Format("2006-01-02")
-		pq, err := pf.compile(OutOfPocket)
-		if err != nil {
-			return nil, err
-		}
-		pi, ps, err := s.flowTotals(ctx, pq)
-		if err != nil {
-			return nil, err
-		}
-		if pi != 0 || ps != 0 {
-			out.Previous = &PeriodTotals{From: pf.From, To: pf.To, Income: q.money(pi), Spending: q.money(ps), Net: q.money(pi - ps),
-				Complete: pf.From >= dataStart+"-01", IncomeChange: ratio(inc, pi), SpendingChange: ratio(spend, ps)}
-		}
+	cmp, err := s.compare(ctx, f, start, end, out, perMonth)
+	if err != nil {
+		return nil, err
 	}
+	out.Comparison = cmp
 	return out, nil
 }
 
@@ -332,4 +341,163 @@ func (s *Service) notCardBill(ctx context.Context) (string, []any, error) {
 		args[i] = "%" + strings.ToLower(h) + "%"
 	}
 	return "NOT (account_type = 'BANK' AND (" + strings.Join(conds, " OR ") + "))", args, nil
+}
+
+func lastOfMonth(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, time.UTC)
+}
+
+// previousRange is the period a summary is compared with by default. A period made of whole months (or this
+// month so far) is set against the same number of months before it, a year (or the year so far) against the
+// year before, and any other against the stretch of equal length just before it.
+func previousRange(from, to time.Time) (time.Time, time.Time) {
+	days := int(to.Sub(from).Hours()/24) + 1
+	if from.Day() == 1 {
+		k := (to.Year()-from.Year())*12 + int(to.Month()-from.Month()) + 1
+		if from.Month() == time.January && k <= 12 {
+			return from.AddDate(-1, 0, 0), to.AddDate(-1, 0, 0)
+		}
+		pf := time.Date(from.Year(), from.Month()-time.Month(k), 1, 0, 0, 0, 0, time.UTC)
+		pt := pf.AddDate(0, 0, days-1)
+		if limit := lastOfMonth(time.Date(pf.Year(), pf.Month()+time.Month(k-1), 1, 0, 0, 0, 0, time.UTC)); to.Equal(lastOfMonth(to)) || pt.After(limit) {
+			pt = limit
+		}
+		return pf, pt
+	}
+	pt := from.AddDate(0, 0, -1)
+	return pt.AddDate(0, 0, -(days - 1)), pt
+}
+
+// compareRange picks the period to compare with: an explicit one, the same dates a year earlier, or the default.
+func compareRange(f Filter, start, end time.Time) (time.Time, time.Time) {
+	if f.CompareFrom != "" {
+		a, _ := time.Parse("2006-01-02", f.CompareFrom)
+		b, _ := time.Parse("2006-01-02", f.CompareTo)
+		return a, b
+	}
+	if f.Compare == "year" {
+		return start.AddDate(-1, 0, 0), end.AddDate(-1, 0, 0)
+	}
+	return previousRange(start, end)
+}
+
+// compare totals the other period and sets it against this one. With no explicit period, nothing to compare
+// with (no data there at all) is nil rather than a comparison with zero.
+func (s *Service) compare(ctx context.Context, f Filter, start, end time.Time, cur *Summary, perMonth func(int64) int64) (*Comparison, error) {
+	explicit := f.CompareFrom != ""
+	cs, ce := compareRange(f, start, end)
+	of := f
+	of.From, of.To = cs.Format("2006-01-02"), ce.Format("2006-01-02")
+	oq, err := of.compile(OutOfPocket)
+	if err != nil {
+		return nil, err
+	}
+	oi, osp, err := s.flowTotals(ctx, oq)
+	if err != nil {
+		return nil, err
+	}
+	if oi == 0 && osp == 0 && !explicit {
+		return nil, nil
+	}
+	all := f
+	all.From, all.To = "", ""
+	aq, err := all.compile(OutOfPocket)
+	if err != nil {
+		return nil, err
+	}
+	dataStart, _, err := s.monthBounds(ctx, aq)
+	if err != nil {
+		return nil, err
+	}
+	days := int(ce.Sub(cs).Hours()/24) + 1
+	money0 := func(v int64) money.Money { return oq.money(v) }
+	omonth := func(v int64) int64 { return int64(math.Round(float64(v) * daysPerMonth / float64(days))) }
+	c := &Comparison{From: of.From, To: of.To, Days: days,
+		Complete: dataStart != "" && of.From >= dataStart+"-01" && of.To <= s.today(),
+		Income:   money0(oi), Spending: money0(osp), Net: money0(oi - osp),
+		PerMonth:       MonthlyAverages{money0(omonth(oi)), money0(omonth(osp)), money0(omonth(oi - osp))},
+		SpendingPerDay: money0(int64(math.Round(float64(osp) / float64(days)))),
+		IncomeChange:   ratio(cur.Income.Minor(), oi), SpendingChange: ratio(cur.Spending.Minor(), osp), NetChange: ratio(cur.Net.Minor(), oi-osp)}
+	if oi > 0 {
+		r := float64(oi-osp) / float64(oi)
+		c.SavingsRate = &r
+	}
+
+	// Category by category.
+	now, _, err := s.CategoryBreakdown(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	then, _, err := s.CategoryBreakdown(ctx, of)
+	if err != nil {
+		return nil, err
+	}
+	byCat := map[string]*CategoryChange{}
+	get := func(ct CategoryTotal) *CategoryChange {
+		x := byCat[ct.CategoryID]
+		if x == nil {
+			x = &CategoryChange{CategoryID: ct.CategoryID, NameEN: ct.NameEN, NameHE: ct.NameHE, Current: oq.money(0), Other: oq.money(0)}
+			byCat[ct.CategoryID] = x
+		}
+		return x
+	}
+	for _, ct := range now {
+		get(ct).Current = ct.Amount
+	}
+	for _, ct := range then {
+		get(ct).Other = ct.Amount
+	}
+	for _, x := range byCat {
+		x.Change = oq.money(x.Current.Minor() - x.Other.Minor())
+		x.ChangePct = ratio(x.Current.Minor(), x.Other.Minor())
+		c.Categories = append(c.Categories, *x)
+	}
+	sort.Slice(c.Categories, func(i, j int) bool {
+		a, b := math.Abs(float64(c.Categories[i].Change.Minor())), math.Abs(float64(c.Categories[j].Change.Minor()))
+		if a != b {
+			return a > b
+		}
+		return c.Categories[i].NameEN < c.Categories[j].NameEN
+	})
+
+	// Month by month, the first against the first and so on.
+	type pair struct{ inc, spend money.Money }
+	monthly := func(ff Filter) (map[string]pair, error) {
+		cf, err := s.CashFlow(ctx, ff)
+		if err != nil {
+			return nil, err
+		}
+		m := map[string]pair{}
+		for _, x := range cf {
+			m[x.Month] = pair{x.Income, x.Spending}
+		}
+		return m, nil
+	}
+	a, err := monthly(f)
+	if err != nil {
+		return nil, err
+	}
+	b, err := monthly(of)
+	if err != nil {
+		return nil, err
+	}
+	am, bm := months(f.From[:7], f.To[:7]), months(of.From[:7], of.To[:7])
+	zero := oq.money(0)
+	for i := 0; i < len(am) || i < len(bm); i++ {
+		cm := ComparedMonth{Position: i + 1, Spending: zero, OtherSpending: zero, Income: zero, OtherIncome: zero}
+		if i < len(am) {
+			cm.Month = am[i]
+			if p, ok := a[am[i]]; ok {
+				cm.Income, cm.Spending = p.inc, p.spend
+			}
+		}
+		if i < len(bm) {
+			cm.OtherMonth = bm[i]
+			if p, ok := b[bm[i]]; ok {
+				cm.OtherIncome, cm.OtherSpending = p.inc, p.spend
+			}
+		}
+		c.Months = append(c.Months, cm)
+	}
+	return c, nil
 }
