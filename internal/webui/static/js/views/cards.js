@@ -6,6 +6,7 @@ import { money, compact, amount, date, weekday, relDay, plural, monthShort, addM
 import { timeline, lines, legend, SERIES } from '../charts.js';
 import { segmented, selectField, statusBadge, drawer, toast, emptyState, tipRows, categoryChip, chartTable, simpleTable } from '../ui.js';
 import { refreshBadges } from '../main.js';
+import { accountEditor } from '../accounts.js';
 
 const F = { status: 'ALL', card: '', bank: '' };
 const owing = (s) => Math.max(0, s.expected.minor - s.settled.minor);
@@ -14,7 +15,8 @@ export default {
   id: 'cards', title: 'Accounts', filters: ['owner'],
   sub: () => 'Bank balances, what each card owes, and which debit paid which bill',
 
-  async render() {
+  async render(ctx) {
+    ctx.setActions(h('button', { class: 'btn', type: 'button', onclick: () => accountEditor(null) }, icon('plus', 'sm'), 'Add account'));
     const owner = state.filters.owner || undefined;
     const from = periodRange('12m').from;
     const [stm, up, props, warn] = await Promise.all([

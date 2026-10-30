@@ -5,6 +5,7 @@ import { state, setReference, setPrefs } from '../state.js';
 import { money, plural } from '../format.js';
 import { drawer, toast, segmented, selectField, emptyState, statusBadge } from '../ui.js';
 import { refreshBadges } from '../main.js';
+import { accountEditor } from '../accounts.js';
 
 const rerender = () => document.dispatchEvent(new CustomEvent('finrep:rerender'));
 const section = (title, sub, ...kids) => h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, title), sub && h('div', { class: 'sub' }, sub))), ...kids);
@@ -40,36 +41,6 @@ function runsCard(runs) {
         (r.status === 'DONE' || r.status === 'CANCELED') && h('button', { class: 'btn ghost sm', type: 'button', onclick: async () => { try { const x = await api.post('/api/v1/categorization/runs/' + r.id + '/undo'); toast(plural(x.reverted, 'transaction') + ' reset'); refreshBadges(); rerender(); } catch (e) { toast(e.message); } } }, icon('undo', 'sm'), 'Undo')))) : h('p', { class: 'muted small' }, 'No runs yet.')));
 }
 
-// ---- accounts ----
-const SCOPES = [{ value: 'LOCAL', label: 'In Israel' }, { value: 'FOREIGN', label: 'Abroad' }, { value: 'ALL', label: 'Everything' }];
-function ruleRow(r, onChange, onRemove) {
-  const num = (k, label, min, max) => h('div', { class: 'field', style: { width: '92px' } }, h('label', null, label), h('input', { class: 'input', type: 'number', min, max, value: r[k] ?? '', oninput: (e) => { r[k] = e.target.value === '' ? null : Number(e.target.value); onChange(); } }));
-  return h('div', { class: 'row wrap', style: { alignItems: 'flex-end', gap: '10px' } }, selectField('Purchases', SCOPES, r.scope, (v) => { r.scope = v; onChange(); }), num('bill_day', 'Billed on day', 1, 31), num('month_offset', 'Months later', 0, 6), num('cutoff_day', 'Cutoff day', 1, 31),
-    h('button', { class: 'btn ghost icon-only', type: 'button', 'aria-label': 'Remove rule', onclick: onRemove }, icon('trash', 'sm')));
-}
-function accountEditor(acc) {
-  let d; const isNew = !acc;
-  const v = { name: acc?.name || '', type: acc?.type || 'BANK', institution: acc?.institution || '', owner: acc?.owner || '', last4: acc?.last4 || '' };
-  let rules = (acc?.billing_rules || []).map((r) => ({ ...r }));
-  const rulesBox = h('div', { class: 'stack' });
-  const drawRules = () => mount(rulesBox, v.type === 'CREDIT_CARD' ? [h('h3', null, 'When is a purchase billed?'), h('p', { class: 'muted small' }, 'A purchase on or after the cutoff day goes to the next cycle. Weekend purchases count as the following Sunday. A bill date on a Saturday moves to Sunday.'),
-    ...rules.map((r, i) => ruleRow(r, () => {}, () => { rules.splice(i, 1); drawRules(); })), h('div', null, h('button', { class: 'btn sm', type: 'button', onclick: () => { rules.push({ scope: rules.length ? 'FOREIGN' : 'LOCAL', bill_day: 10, month_offset: 0, cutoff_day: 10, standing_order_extra_cycles: 0 }); drawRules(); } }, icon('plus', 'sm'), 'Add a rule'))] : null);
-  const f = (label, key, extra) => h('div', { class: 'field' }, h('label', null, label), h('input', { class: 'input', value: v[key], autocomplete: 'off', oninput: (e) => { v[key] = e.target.value; }, ...extra }));
-  const body = h('form', { class: 'stack', onsubmit: async (e) => {
-    e.preventDefault();
-    const clean = rules.map((r) => ({ scope: r.scope, bill_day: +r.bill_day, month_offset: +(r.month_offset || 0), cutoff_day: r.cutoff_day ? +r.cutoff_day : null, standing_order_extra_cycles: +(r.standing_order_extra_cycles || 0) }));
-    try {
-      if (isNew) await api.post('/api/v1/accounts', { ...v, billing_rules: v.type === 'CREDIT_CARD' ? clean : undefined });
-      else { await api.patch('/api/v1/accounts/' + acc.id, { name: v.name, institution: v.institution, owner: v.owner, last4: v.last4 }); if (acc.type === 'CREDIT_CARD') await api.put('/api/v1/accounts/' + acc.id + '/billing-rules', { rules: clean }); }
-      const a = await api.get('/api/v1/accounts'); setReference(a.items, state.categories); d.close(); toast('Saved'); rerender();
-    } catch (err) { toast(err.message); }
-  } },
-    isNew && selectField('Kind', [{ value: 'BANK', label: 'Bank account' }, { value: 'CREDIT_CARD', label: 'Credit card' }], v.type, (t) => { v.type = t; drawRules(); }),
-    f('Name', 'name', { required: true, placeholder: 'e.g. Cal 1001' }), f('Institution', 'institution', { required: true, placeholder: 'Leumi, Cal, Isracard…' }), f('Whose', 'owner', { placeholder: 'e.g. Alice' }),
-    f('Last four digits', 'last4', { inputmode: 'numeric', maxlength: 4, placeholder: 'Cards only. Used to match statement files.' }), rulesBox,
-    h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, isNew ? 'Add account' : 'Save')));
-  drawRules(); d = drawer(isNew ? 'New account' : 'Edit account', body);
-}
 const SCOPE_NAME = { LOCAL: 'Israel', FOREIGN: 'Abroad', ALL: 'All' };
 
 function billingSummary(a) {

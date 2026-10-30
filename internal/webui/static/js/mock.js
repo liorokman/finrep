@@ -257,6 +257,11 @@ export async function mockRequest(method, path, { params = {}, body } = {}) {
     if (body.monthly_budget_minor != null) c.monthly_budget = M(body.monthly_budget_minor); if (body.clear_budget) c.monthly_budget = null; if (body.keep) c.created_by = 'USER';
     return c;
   }
+  if ((m = path.match(/^\/api\/v1\/accounts\/([^/]+)$/)) && (method === 'PATCH' || method === 'DELETE')) {
+    const i = ACC.findIndex((x) => x.id === m[1]); if (i < 0) throw new MockError(404, 'not found');
+    if (method === 'DELETE') { if (TX.some((t) => t.account_id === m[1])) throw new MockError(409, 'it is still in use'); ACC.splice(i, 1); return null; }
+    Object.assign(ACC[i], Object.fromEntries(['name', 'institution', 'owner', 'last4'].filter((k) => body[k] != null).map((k) => [k, body[k]]))); return { ...ACC[i], balance: M(balance(ACC[i], TODAY)), opening_balance: M(0) };
+  }
   if (path === '/api/v1/accounts' && method === 'POST') { const a = { id: id('acc'), name: body.name, type: body.type, institution: body.institution, owner: body.owner || '', last4: body.last4 || '', currency: 'ILS', billing_rules: body.billing_rules || [] }; ACC.push(a); return { ...a, balance: M(0), opening_balance: M(0) }; }
   if ((m = path.match(/^\/api\/v1\/accounts\/([^/]+)\/billing-rules$/))) { const a = ACC.find((x) => x.id === m[1]); a.billing_rules = body.rules; return { rules: a.billing_rules, bill_dates_recomputed: 0 }; }
   if (path === '/api/v1/categorization/runs' && method === 'GET') return { items: [{ id: 'run_latest', status: 'DONE', started_at: '2026-10-30 08:05:11', finished_at: '2026-10-30 08:07:40', classifier_model: 'qwen2.5-7b-instruct', generator_model: 'qwen2.5-14b-instruct', threshold: 0.75, processed: 71, total: 71, error: '' }] };
