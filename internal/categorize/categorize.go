@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,6 +131,7 @@ type group struct {
 	amount   string
 	currency string
 	notes    string
+	detail   string // a bank line's description, cleaned for the model; empty for cards
 	ids      []string
 }
 
@@ -165,10 +167,16 @@ func (s *worker) pending(ctx context.Context) ([]*group, int, error) {
 		if minor > 0 {
 			dir = "in"
 		}
-		key := strings.ToLower(strings.TrimSpace(payee)) + "|" + dir
+		// A bank line's payee is only the kind of movement ("internet transfer"); what it was for is in the
+		// description (who received it, and why), so lines are told apart, and judged, by both.
+		detail := ""
+		if accType == string(ledger.Bank) {
+			detail = bankDetail(notes)
+		}
+		key := strings.ToLower(strings.TrimSpace(payee)) + "|" + dir + "|" + strings.ToLower(detail)
 		g := byKey[key]
 		if g == nil {
-			g = &group{payee: strings.TrimSpace(payee), date: date, amount: formatMinor(minor, cur), currency: cur, notes: notes}
+			g = &group{payee: strings.TrimSpace(payee), date: date, amount: formatMinor(minor, cur), currency: cur, notes: notes, detail: detail}
 			byKey[key] = g
 			order = append(order, g)
 		}
@@ -176,6 +184,26 @@ func (s *worker) pending(ctx context.Context) ([]*group, int, error) {
 		total++
 	}
 	return order, total, rows.Err()
+}
+
+var (
+	accountNumber = regexp.MustCompile(`\b\d{2,3}-\d{2,3}-\d{4,}\b`)
+	spaces        = regexp.MustCompile(`\s+`)
+)
+
+// maxDetail caps a bank description sent to a decision model, in characters.
+const maxDetail = 90
+
+// bankDetail turns a bank line's description into what a model should read: account numbers and the
+// marker of a provisional movement are dropped, spaces collapsed.
+func bankDetail(notes string) string {
+	n := strings.ReplaceAll(notes, "* תנועות היום", "")
+	n = spaces.ReplaceAllString(accountNumber.ReplaceAllString(n, ""), " ")
+	n = strings.TrimSpace(n)
+	if r := []rune(n); len(r) > maxDetail {
+		n = string(r[:maxDetail])
+	}
+	return n
 }
 
 func matchesAny(payee string, hints []string) bool {
@@ -404,12 +432,13 @@ func (s *worker) retry(ctx context.Context, model string, fn func() error) error
 	return fmt.Errorf("model %q: %w", model, last)
 }
 
-const decisionInstructions = "Which category does this bank or credit-card transaction belong to? Judge by the merchant or payee."
+const decisionInstructions = "Which category does this bank or credit-card transaction belong to? Judge by the merchant or payee. " +
+	"A bank transfer (such as \"הע. אינטרנט\", an internet transfer, or \"העברה\") is money sent to a person or organization: judge it by the recipient and the stated purpose after the colon, not by the word \"internet\"."
 
 // decide asks the decision model about each payee in turn. Options are keyed c0, c1, … so the model never
 // sees internal ids, and each is described by both of its names.
 // maxDecisionState caps the text sent to a decision model, in characters.
-const maxDecisionState = 120
+const maxDecisionState = 160
 
 func (s *worker) decide(ctx context.Context, groups []*group, cats []catView) ([]classification, error) {
 	criteria := make(map[string]string, len(cats))
@@ -431,6 +460,9 @@ func (s *worker) decide(ctx context.Context, groups []*group, cats []catView) ([
 			return nil, ctx.Err()
 		}
 		state := g.payee
+		if g.detail != "" {
+			state += ": " + g.detail
+		}
 		if !strings.HasPrefix(g.amount, "-") {
 			state = "Money received: " + g.payee
 		}

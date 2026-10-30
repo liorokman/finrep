@@ -870,3 +870,60 @@ type deciderFunc func(state string, criteria map[string]string) (string, float64
 func (f deciderFunc) Choose(_ context.Context, _, state, _ string, criteria map[string]string) (string, float64, error) {
 	return f(state, criteria)
 }
+
+func TestBankTransfersAreJudgedByTheirDescriptionNotTheirPayee(t *testing.T) {
+	e := newEnv(t)
+	e.cat("Family Transfers", ledger.Expense)
+	e.cat("Sports & Hobbies", ledger.Expense)
+	e.cat("Telecom & Internet", ledger.Expense)
+	bank := &ledger.Account{Name: "Leumi", Type: ledger.Bank, Institution: "Leumi", Owner: "Alice"}
+	if err := e.l.CreateAccount(ctx, bank); err != nil {
+		t.Fatal(err)
+	}
+	ins := func(date, notes string) *ledger.Transaction {
+		n := notes
+		x := &ledger.Transaction{AccountID: bank.ID, Date: date, Amount: money.New(-20000, bank.Currency), PayeeRaw: "הע. אינטרנט", Notes: &n}
+		if err := e.l.InsertTransaction(ctx, x); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	kid := ins("2026-10-04", "העברה אל: דנה לוי 11-111-111111111 לקרוב משפחה")
+	club := ins("2026-10-01", "העברה אל: חוג 17-222-000022222 אבי כהן אוקטובר")
+	club2 := ins("2026-11-01", "העברה אל: חוג 17-222-000022222 אבי כהן נובמבר")
+	d := deciderFunc(func(state string, criteria map[string]string) (string, float64, error) {
+		name := "Telecom & Internet" // what the bare payee suggests
+		switch {
+		case strings.Contains(state, "דנה"):
+			name = "Family Transfers"
+		case strings.Contains(state, "חוג"):
+			name = "Sports & Hobbies"
+		}
+		for k, v := range criteria {
+			if strings.HasPrefix(v, name) {
+				return k, 0.95, nil
+			}
+		}
+		return "", 0, errors.New("no option")
+	})
+	var seen []string
+	wrapped := deciderFunc(func(state string, criteria map[string]string) (string, float64, error) {
+		seen = append(seen, state)
+		return d(state, criteria)
+	})
+	r := e.run(e.svc(nil, nil, func(o *Options) { o.Decider = wrapped }))
+	if r.Status != "DONE" {
+		t.Fatalf("%+v", r)
+	}
+	for _, s := range seen {
+		if strings.Contains(s, "111111111") || strings.Contains(s, "000022222") {
+			t.Errorf("account numbers must not reach the model: %q", s)
+		}
+	}
+	if got := e.get(kid.ID).CategoryNameEN; got != "Family Transfers" {
+		t.Errorf("transfer to a relative: %q", got)
+	}
+	if a, b := e.get(club.ID).CategoryNameEN, e.get(club2.ID).CategoryNameEN; a != "Sports & Hobbies" || b != "Sports & Hobbies" {
+		t.Errorf("club dues: %q %q", a, b)
+	}
+}
