@@ -47,6 +47,8 @@ var seedCategories = []seedCat{
 	{"Cash Withdrawal", "משיכת מזומן", ledger.Expense},
 	{"Shopping", "קניות כלליות", ledger.Expense},
 	{"Miscellaneous", "שונות", ledger.Expense},
+	// Bank debits that pay cards this app has no statements for; counted as spending in one lump.
+	{"Wife's Cards", "כרטיסי אשראי של בת הזוג", ledger.Expense},
 	{"Salary", "משכורת", ledger.Income},
 	{"Refunds", "החזרים", ledger.Income},
 	{"Investment Income", "הכנסות מהשקעות", ledger.Income},

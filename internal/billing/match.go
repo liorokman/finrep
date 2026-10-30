@@ -227,3 +227,80 @@ func (s *Service) ConfirmAll(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// CardPaymentCandidate is a bank debit that looks like a card payment (its payee matches a hint) but
+// settles no statement and is not marked external.
+type CardPaymentCandidate struct {
+	TransactionID string
+	AccountID     string
+	Owner         string
+	Date          string
+	Payee         string
+	Amount        money.Money // positive
+	CategoryID    string
+	// Counted: reports include it in spending (uncategorized or an expense category).
+	// Hidden: reports exclude it because it sits in a transfer category, yet no statement backs that up.
+	Counted, Hidden bool
+	HasProposal     bool // auto-match has a statement for it
+}
+
+// UnlinkedCardPayments lists bank debits that look like card payments and are neither linked to a
+// statement nor marked external. Each is either a payment for a card whose statements are not imported
+// (its spending is invisible or lumped, depending on the category) or one that auto-match can still
+// link. It returns nothing until card-payment hints are configured; the boolean says whether they are.
+func (s *Service) UnlinkedCardPayments(ctx context.Context) ([]CardPaymentCandidate, bool, error) {
+	hints, err := s.Hints(ctx)
+	if err != nil || len(hints) == 0 {
+		return nil, false, err
+	}
+	rows, err := s.st.QueryContext(ctx, `SELECT t.id, a.id, a.owner, t.date, t.payee_raw, -t.amount_minor, t.currency, COALESCE(t.category_id, ''), COALESCE(c.category_type, '')
+		FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN categories c ON c.id = t.category_id
+		WHERE a.account_type = 'BANK' AND t.amount_minor < 0
+		  AND NOT EXISTS (SELECT 1 FROM settlements x WHERE x.bank_transaction_id = t.id)
+		  AND NOT EXISTS (SELECT 1 FROM external_payments e WHERE e.bank_transaction_id = t.id)
+		ORDER BY t.date, t.id`)
+	if err != nil {
+		return nil, true, err
+	}
+	var out []CardPaymentCandidate
+	for rows.Next() {
+		var c CardPaymentCandidate
+		var minor int64
+		var cur, catType string
+		if err := rows.Scan(&c.TransactionID, &c.AccountID, &c.Owner, &c.Date, &c.Payee, &minor, &cur, &c.CategoryID, &catType); err != nil {
+			rows.Close()
+			return nil, true, err
+		}
+		low := strings.ToLower(c.Payee)
+		match := false
+		for _, h := range hints {
+			if strings.Contains(low, h) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		c.Amount = money.New(minor, money.Currency(cur))
+		c.Hidden = catType == "TRANSFER"
+		c.Counted = catType == "" || catType == "EXPENSE"
+		out = append(out, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, true, err
+	}
+	ps, err := s.Proposals(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	proposed := map[string]bool{}
+	for _, p := range ps {
+		proposed[p.BankTxID] = true
+	}
+	for i := range out {
+		out[i].HasProposal = proposed[out[i].TransactionID]
+	}
+	return out, true, nil
+}

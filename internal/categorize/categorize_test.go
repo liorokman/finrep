@@ -503,6 +503,9 @@ func TestSeed(t *testing.T) {
 			t.Fatalf("%+v", c)
 		}
 	}
+	if _, err := e.l.FindCategoryByName(ctx, "Wife's Cards"); err != nil {
+		t.Fatal("missing the category for cards with no statements here")
+	}
 	if types[ledger.Expense] == 0 || types[ledger.Income] == 0 || types[ledger.Transfer] == 0 {
 		t.Fatalf("types: %v", types)
 	}
@@ -517,5 +520,49 @@ func TestSeed(t *testing.T) {
 	// Seed itself is idempotent and fills only gaps.
 	if n, err := Seed(ctx, e.l); n != 1 || err != nil {
 		t.Fatalf("Seed after deletion: %d, %v", n, err)
+	}
+}
+
+func TestCardPaymentLinesAreLeftToTheUser(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	bank := &ledger.Account{Name: "Leumi", Type: ledger.Bank, Institution: "Leumi", Owner: "Alice"}
+	if err := e.l.CreateAccount(ctx, bank); err != nil {
+		t.Fatal(err)
+	}
+	ins := func(acc *ledger.Account, minor int64, payee string) *ledger.Transaction {
+		x := &ledger.Transaction{AccountID: acc.ID, Date: "2024-03-01", Amount: money.New(minor, acc.Currency), PayeeRaw: payee}
+		if err := e.l.InsertTransaction(ctx, x); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	pay := ins(bank, -50000, "כרטיסי אשראי-י")
+	refund := ins(bank, 1000, "כרטיסי אשראי-י זיכוי")   // a credit is not a payment
+	cardCharge := ins(e.acc, -900, "כרטיסי אשראי shop") // a card purchase is never skipped
+	other := ins(bank, -700, "GROCER")
+	var asked []string
+	cl := &fake{fn: func(_ int, p prompt) (string, error) {
+		var rs []string
+		for _, it := range p.Items {
+			asked = append(asked, it.Payee)
+			rs = append(rs, fmt.Sprintf(`{"id":"%s","category_id":"%s","confidence":0.9}`, it.ID, food.ID))
+		}
+		return `{"results":[` + strings.Join(rs, ",") + `]}`, nil
+	}}
+	s := e.svc(cl, nil, func(o *Options) {
+		o.CardPaymentHints = func(context.Context) ([]string, error) { return []string{"כרטיסי אשראי"}, nil }
+	})
+	r := e.run(s)
+	if r.Total != 3 || len(asked) != 3 {
+		t.Fatalf("total %d, asked %v", r.Total, asked)
+	}
+	if got := e.get(pay.ID); got.CategoryID != nil || got.CategorizedBy != ledger.ByUnset {
+		t.Fatalf("card payment must stay uncategorized: %+v", got)
+	}
+	for _, x := range []*ledger.Transaction{refund, cardCharge, other} {
+		if e.get(x.ID).CategoryID == nil {
+			t.Fatalf("%s should have been categorized", x.PayeeRaw)
+		}
 	}
 }

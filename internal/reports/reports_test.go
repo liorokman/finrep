@@ -610,3 +610,39 @@ func TestPointDates(t *testing.T) {
 		t.Fatal("reversed range")
 	}
 }
+
+func TestWarningsAboutUnlinkedCardPayments(t *testing.T) {
+	w := newWorld(t)
+	w.seed()
+	got, err := w.s.Warnings(ctx, Filter{})
+	if err != nil || got.HintsConfigured || len(got.UnlinkedCardPayments) != 0 {
+		t.Fatalf("no hints yet: %+v %v", got, err)
+	}
+	if err := w.b.SetHints(ctx, []string{"card pay"}); err != nil {
+		t.Fatal(err)
+	}
+	w.add(w.bank, "2026-02-12", -20000, "CARD PAY WIFE", "") // counted as uncategorized spending
+	w.spendGross += 20000
+	w.add(w.bank, "2026-03-12", -30000, "CARD PAY WIFE", "Savings") // hidden in a transfer category
+	w.spendGross += 40000
+	w.add(w.bank, "2026-04-12", -40000, "CARD PAY WIFE", "Rent") // counted in an expense category
+	got, err = w.s.Warnings(ctx, Filter{})
+	if err != nil || !got.HintsConfigured || len(got.UnlinkedCardPayments) != 3 ||
+		got.Counted.Minor() != 60000 || got.Hidden.Minor() != 30000 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if got, _ := w.s.Warnings(ctx, Filter{From: "2026-03-01", To: "2026-03-31"}); len(got.UnlinkedCardPayments) != 1 || got.Hidden.Minor() != 30000 || got.Counted.Minor() != 0 {
+		t.Fatalf("date filter: %+v", got)
+	}
+	if got, _ := w.s.Warnings(ctx, Filter{Owner: "Wife"}); len(got.UnlinkedCardPayments) != 0 {
+		t.Fatalf("owner filter: %+v", got)
+	}
+	if _, err := w.s.Warnings(ctx, Filter{From: "bad"}); !errors.Is(err, ledger.ErrInvalid) {
+		t.Fatal(err)
+	}
+	// The counted debit really does inflate spending, which is what the warning is for.
+	_, total, _ := w.s.CategoryBreakdown(ctx, Filter{})
+	if total.Minor() != w.spendGross {
+		t.Errorf("spending %d, tally %d", total.Minor(), w.spendGross)
+	}
+}

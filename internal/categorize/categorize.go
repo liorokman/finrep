@@ -37,6 +37,10 @@ type Options struct {
 	BatchSize                       int           // distinct payees per request; default 20
 	Attempts                        int           // per request; default 3
 	Backoff                         time.Duration // base delay between attempts; default 2s
+	// CardPaymentHints returns substrings that mark a bank line as a card payment. Such lines are not
+	// categorized by the models: whether they are transfers (tracked card) or spending (a card with no
+	// statements here) depends on the settlement, which the models cannot see.
+	CardPaymentHints func(ctx context.Context) ([]string, error)
 }
 
 type Service struct {
@@ -102,9 +106,17 @@ type group struct {
 }
 
 func (s *Service) pending(ctx context.Context) ([]*group, int, error) {
-	rows, err := s.st.QueryContext(ctx, `SELECT id, date, amount_minor, currency, COALESCE(NULLIF(payee_cleaned, ''), payee_raw), COALESCE(notes, '')
-		FROM transactions WHERE category_id IS NULL AND categorized_by = 'UNSET' AND kind <> 'EMPLOYER_COVERAGE'
-		ORDER BY date DESC, id`)
+	var hints []string
+	if s.o.CardPaymentHints != nil {
+		var err error
+		if hints, err = s.o.CardPaymentHints(ctx); err != nil {
+			return nil, 0, err
+		}
+	}
+	rows, err := s.st.QueryContext(ctx, `SELECT t.id, t.date, t.amount_minor, t.currency, COALESCE(NULLIF(t.payee_cleaned, ''), t.payee_raw), COALESCE(t.notes, ''), a.account_type
+		FROM transactions t JOIN accounts a ON a.id = t.account_id
+		WHERE t.category_id IS NULL AND t.categorized_by = 'UNSET' AND t.kind <> 'EMPLOYER_COVERAGE'
+		ORDER BY t.date DESC, t.id`)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -113,10 +125,13 @@ func (s *Service) pending(ctx context.Context) ([]*group, int, error) {
 	var order []*group
 	total := 0
 	for rows.Next() {
-		var id, date, cur, payee, notes string
+		var id, date, cur, payee, notes, accType string
 		var minor int64
-		if err := rows.Scan(&id, &date, &minor, &cur, &payee, &notes); err != nil {
+		if err := rows.Scan(&id, &date, &minor, &cur, &payee, &notes, &accType); err != nil {
 			return nil, 0, err
+		}
+		if accType == string(ledger.Bank) && minor < 0 && matchesAny(payee, hints) {
+			continue
 		}
 		dir := "out"
 		if minor > 0 {
@@ -133,6 +148,16 @@ func (s *Service) pending(ctx context.Context) ([]*group, int, error) {
 		total++
 	}
 	return order, total, rows.Err()
+}
+
+func matchesAny(payee string, hints []string) bool {
+	low := strings.ToLower(payee)
+	for _, h := range hints {
+		if h != "" && strings.Contains(low, h) {
+			return true
+		}
+	}
+	return false
 }
 
 func formatMinor(minor int64, cur string) string {

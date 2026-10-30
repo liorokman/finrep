@@ -536,3 +536,58 @@ func TestOneDebitSettlesOneStatement(t *testing.T) {
 		t.Fatalf("%+v", ps)
 	}
 }
+
+func TestUnlinkedCardPayments(t *testing.T) {
+	e := newEnv(t)
+	if c, ok, err := e.s.UnlinkedCardPayments(ctx); err != nil || ok || c != nil {
+		t.Fatalf("without hints nothing can be said: %v %v %v", c, ok, err)
+	}
+	e.s.SetHints(ctx, []string{"כרטיסי אשראי"})
+
+	tracked := e.purchase(e.cal, "2026-06-12", 10000, "X")
+	stID := e.statement(e.cal, "2026-07-10", tracked)
+	linked := e.debit("2026-07-10", 10000, "כרטיסי אשראי-י")
+	if _, err := e.s.Settle(ctx, stID, linked.ID, nil, Manual); err != nil {
+		t.Fatal(err)
+	}
+	ext := e.debit("2026-07-11", 500, "כרטיסי אשראי-י")
+	if err := e.s.MarkExternal(ctx, ext.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.debit("2026-07-12", 800, "rent") // no hint: not a card payment
+
+	hidden := e.debit("2026-07-13", 3000, "כרטיסי אשראי-י")
+	transfer := &ledger.Category{NameEN: "Card payment", NameHE: "x", Type: ledger.Transfer}
+	if err := e.l.CreateCategory(ctx, transfer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.l.BulkUpdate(ctx, []string{hidden.ID}, ledger.TxUpdate{CategoryID: &transfer.ID}); err != nil {
+		t.Fatal(err)
+	}
+	counted := e.debit("2026-07-14", 4000, "כרטיסי אשראי-י")
+	// A debit that matches an unpaid statement exactly can still be linked.
+	p2 := e.purchase(e.isra, "2026-06-12", 9900, "Y")
+	e.statement(e.isra, "2026-07-10", p2)
+	linkable := e.debit("2026-07-10", 9900, "כרטיסי אשראי-י")
+
+	got, ok, err := e.s.UnlinkedCardPayments(ctx)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	by := map[string]CardPaymentCandidate{}
+	for _, c := range got {
+		by[c.TransactionID] = c
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 candidates, got %+v", got)
+	}
+	if c := by[hidden.ID]; !c.Hidden || c.Counted || c.Amount.Minor() != 3000 {
+		t.Errorf("hidden: %+v", c)
+	}
+	if c := by[counted.ID]; !c.Counted || c.Hidden || c.HasProposal {
+		t.Errorf("counted: %+v", c)
+	}
+	if c := by[linkable.ID]; !c.Counted || !c.HasProposal {
+		t.Errorf("linkable: %+v", c)
+	}
+}
