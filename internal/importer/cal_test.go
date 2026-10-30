@@ -221,3 +221,33 @@ func TestOpenPDFToleratesJunkBeforeTheHeaderAndAfterEOF(t *testing.T) {
 		t.Fatalf("junk around a valid PDF: %v", err)
 	}
 }
+
+func TestCalStatementWithoutChargesOfItsOwn(t *testing.T) {
+	// Nothing was charged this month: a header, no table, no total.
+	empty := []pdfRow{
+		row(446, "דף חיוב חודשי ל-10/04/23"),
+		row(283, "ה מ ס תיי ם ב- 1 6 6 2 ע\"ש"), // spaced out, digits reversed
+		row(300, "לא בוצעו ע סקו ת החוד ש"),
+	}
+	p, err := parseCalRows(empty, "cal.pdf", PDFOptions{})
+	if err != nil || len(p.Lines) != 0 || len(p.Statements) != 1 || p.Statements[0].BillDate != "2023-04-10" || p.Statements[0].PrintedTotal.Minor() != 0 {
+		t.Fatalf("%+v %v", p, err)
+	}
+	// Only a scheduled standing order listed for next month: still an empty statement for this one.
+	future := []pdfRow{
+		row(446, "דף חיוב חודשי ל-10/08/23"),
+		row(283, "לכרטיס המסתיים ב-1005 ע\"ש"),
+		row(452, "פירוט עסקות לחיוב עתידי"),
+		row(152, "₪ 24.08", 188, "10/09/23", 246, "₪ 24.08", 352, "הוראת קבע", 386, "רפואה", 475, "כללית", 503, "07/08/2023"),
+	}
+	p, err = parseCalRows(future, "cal.pdf", PDFOptions{})
+	if err != nil || len(p.Lines) != 1 || p.Lines[0].BillDate != "2023-09-10" || len(p.Statements) != 1 || p.Statements[0].BillDate != "2023-08-10" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	// A charge due now with no total is still an error, not an empty statement.
+	broken := []pdfRow{row(446, "דף חיוב חודשי ל-10/08/23"), row(283, "לכרטיס המסתיים ב-1005 ע\"ש"),
+		row(154, "₪ 566.49", 218, "₪ 566.49", 268, "לא", 353, "הוראת קבע", 386, "רפואה", 475, "קרן מכבי", 503, "02/06/2026")}
+	if _, err := parseCalRows(broken, "cal.pdf", PDFOptions{}); err == nil {
+		t.Fatal("charges without a total must be rejected")
+	}
+}

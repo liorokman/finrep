@@ -32,11 +32,15 @@ func parseCalRows(rows []pdfRow, filename string, opt PDFOptions) (*Parsed, erro
 	}
 	p := &Parsed{Source: SourceCalPDF, Filename: filename}
 	var headerBill string
-	var pending []int // lines awaiting the statement total that follows them
+	noCharges := false // the statement says no transactions were made this month
+	var pending []int  // lines awaiting the statement total that follows them
 	future := false
 
 	for _, r := range rows {
 		text := r.Text()
+		if compact := strings.ReplaceAll(text, " ", ""); strings.Contains(compact, "לאבוצעו") && strings.Contains(compact, "החודש") {
+			noCharges = true // "no transactions were made this month", however the spaces fall
+		}
 		if headerBill == "" {
 			if m := calHeaderDate.FindStringSubmatch(text); m != nil {
 				if iso, ok := isoFrom2(m[1]); ok {
@@ -104,6 +108,12 @@ func parseCalRows(rows []pdfRow, filename string, opt PDFOptions) (*Parsed, erro
 	}
 	if len(pending) > 0 {
 		return nil, fmt.Errorf("%s: %d transaction line(s) are not followed by a statement total; unsupported layout", filename, len(pending))
+	}
+	if len(p.Statements) == 0 && headerBill != "" && (noCharges || len(p.Lines) > 0) {
+		// A month without a charge of its own has a header but no table and no total (it may still list scheduled
+		// future charges): an empty statement. Any charge due now would have been left pending, and failed above.
+		p.Statements = append(p.Statements, Statement{BillDate: headerBill, PrintedTotal: &money.Money{}})
+		*p.Statements[0].PrintedTotal = money.New(0, money.ILS)
 	}
 	if len(p.Statements) == 0 {
 		return nil, fmt.Errorf("%s: no statement total found (expected 'סה\"כ לתאריך'); unsupported layout", filename)
