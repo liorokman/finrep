@@ -33,9 +33,9 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - Identical payees (per direction) are asked once per run; employer-coverage lines are not sent to the models and inherit their purchase's category. A starter category set is seeded once on first start (`categorize.SeedOnce`).
 - Acceptance (fake LLM servers): threshold behavior at 0.74/0.75; unknown ids ignored; new categories de-duplicated; manual categories never overwritten; undo restores state; cancel+restart does not leak state.
 
-## Phase 5 — Card billing, statements and settlements
-- Billing rules per card (scope, bill day, month offset, optional cutoff day), weekend shift, month-end clamping; issuer bill date from file overrides computed date.
-- Statements grouped by `(account, scope, bill_date)`, including upcoming ones; settlement states UPCOMING/BILLED/PARTIAL/PAID; external payments.
+## Phase 5 — Card billing, statements and settlements  *(done: `internal/billing`; HTTP wiring comes with Phase 8)*
+- Billing rules per card (scope, bill day, month offset, optional cutoff day), weekend shift, month-end clamping; issuer bill date from file overrides computed date. Only a Saturday bill date moves (to Sunday): the real bank data shows card debits on Fridays.
+- Statements grouped by `(account, bill_date)`, including upcoming ones; settlement states UPCOMING/BILLED/PARTIAL/PAID; external payments.
 - Auto-match proposals for unlinked, undecided bank debits; sticky manual decisions; payee hints from settings.
 - Acceptance: the Isracard foreign case (September purchase → 2 November); the Cal local case around its cutoff day (9th vs 10th); a purchase on the 31st; leap-year February; re-running auto-match is idempotent and never touches manual links.
 
