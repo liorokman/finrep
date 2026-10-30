@@ -27,6 +27,23 @@ tasks:
     cmds:
       - go run ./cmd/server --log-level=debug --oidc-enabled=false --port=8080
 
+  build-finrep:
+    desc: Build the v2 server binary (rewrite branch)
+    cmds:
+      - go build -o finrep ./cmd/finrep
+
+  dev-finrep:
+    desc: Run the v2 server locally (auth off, loopback only)
+    cmds:
+      - go run ./cmd/finrep --auth=off --log-level=debug --port=8080
+
+  lint:
+    desc: Format check and vet
+    cmds:
+      # Only the v2 packages are checked; the legacy code is deleted as it is replaced.
+      - test -z "$(gofmt -l cmd/finrep internal/money internal/store internal/conf)"
+      - go vet ./...
+
   run-mcp:
     desc: Run in MCP stdio transport mode
     cmds:

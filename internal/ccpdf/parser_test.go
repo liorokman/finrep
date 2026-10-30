@@ -16,7 +16,7 @@ func TestExactTransactionCounts(t *testing.T) {
 		expected int
 	}{
 		{"isracard", filepath.Join("..", "..", "data", "Isracard-2026-07.pdf"), 10},
-		{"cal", filepath.Join("..", "..", "data", "cal-1001-2026-07.pdf"), 24},
+		{"cal", filepath.Join("..", "..", "data", "2026-07.pdf"), 24},
 		{"leumi", filepath.Join("..", "..", "data", "leumi-2026-07.pdf"), 9},
 	}
 
