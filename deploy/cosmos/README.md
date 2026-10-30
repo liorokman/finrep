@@ -27,7 +27,7 @@ the data volume (`FINREP_SESSION_SECRET_FILE`, `FINREP_MCP_TOKEN_FILE`). Create 
     head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '='   # MCP bearer token; drop the env line to disable /mcp
 
     printf %s "$VALUE" | ssh cosmos 'docker run --rm -i --user root --entrypoint sh -v finrep-data:/data \
-      localhost:5000/finrep:0.1.4 -c "cat > /data/mcp_token && chown 10001:10001 /data/mcp_token && chmod 400 /data/mcp_token"'
+      localhost:5000/finrep:0.1.5 -c "cat > /data/mcp_token && chown 10001:10001 /data/mcp_token && chmod 400 /data/mcp_token"'
 
 Then create or update the service. Cosmos replaces the container and the route when the name already exists:
 
