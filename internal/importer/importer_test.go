@@ -385,6 +385,20 @@ func TestParseLeumiBank(t *testing.T) {
 	}
 }
 
+func TestParseLeumiBankSkipsProvisionalMovements(t *testing.T) {
+	// Today's movements carry a prefixed reference and are listed again, settled, in the next export.
+	p, err := ParseLeumiBank(strings.NewReader(bankHTML([][]string{
+		{"02/08/2026", "", "pending", "100000001", "200.00", "0.00", "1,234.56", "", "* תנועות היום"},
+		{"01/08/2026", "", "settled", "88581", "100.00", "0.00", "5,000.00", "", ""},
+	})), "x.xls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Lines) != 1 || p.Lines[0].Payee != "settled" || len(p.Balances) != 1 || len(p.Warnings) != 1 {
+		t.Fatalf("lines=%+v warnings=%v", p.Lines, p.Warnings)
+	}
+}
+
 func TestParseLeumiBankBalanceCheck(t *testing.T) {
 	rows := [][]string{
 		{"01/09/2026", "", "a", "1", "100.00", "0.00", "900.00", "", ""},
@@ -464,4 +478,33 @@ func TestRealBankExports(t *testing.T) {
 		t.Fatalf("rows %d != inserted %d", got, inserted)
 	}
 	t.Logf("%d files, %d unique lines", len(files), inserted)
+}
+
+func TestBalanceChain(t *testing.T) {
+	// oldest first
+	p, err := ParseLeumiBank(strings.NewReader(bankHTML([][]string{
+		{"01/09/2026", "", "a", "1", "100.00", "0.00", "900.00", "", ""},
+		{"02/09/2026", "", "b", "2", "0.00", "50.00", "950.00", "", ""},
+		{"03/09/2026", "", "c", "3", "25.00", "0.00", "925.00", "", ""},
+	})), "x.xls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ok := p.BalanceChain()
+	if !ok || c.FirstDate != "2026-09-01" || c.LastDate != "2026-09-03" || c.BeforeFirst.Minor() != 100000 || c.Closing.Minor() != 92500 {
+		t.Fatalf("%+v %v", c, ok)
+	}
+	// newest first, with the current day's movement pinned above the rest
+	p, _ = ParseLeumiBank(strings.NewReader(bankHTML([][]string{
+		{"03/09/2026", "", "c", "3", "25.00", "0.00", "925.00", "", ""},
+		{"03/09/2026", "", "c", "3", "25.00", "0.00", "925.00", "", ""},
+		{"02/09/2026", "", "b", "2", "0.00", "50.00", "950.00", "", ""},
+		{"01/09/2026", "", "a", "1", "100.00", "0.00", "900.00", "", ""},
+	})), "y.xls")
+	if c, ok := p.BalanceChain(); !ok || c.BeforeFirst.Minor() != 100000 || c.Closing.Minor() != 92500 || c.FirstDate != "2026-09-01" {
+		t.Fatalf("newest first: %+v %v", c, ok)
+	}
+	if _, ok := (&Parsed{}).BalanceChain(); ok {
+		t.Fatal("an empty file has no chain")
+	}
 }

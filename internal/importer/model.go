@@ -72,6 +72,9 @@ type Parsed struct {
 	Statements []Statement
 	Rejected   []Rejected
 	Warnings   []string
+	// Balances is the running balance after each line, for sources that print one (the Leumi bank export);
+	// an entry is nil when the file does not give it.
+	Balances []*money.Money
 }
 
 // Key returns the stable identity of a line. n is the 1-based position of the

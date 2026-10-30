@@ -86,6 +86,7 @@ func ParseLeumiBank(r io.Reader, filename string) (*Parsed, error) {
 
 	p := &Parsed{Source: SourceLeumiBank, Filename: filename}
 	var balances []*money.Money
+	pending := 0
 	for i := hdr + 1; i < len(rows); i++ {
 		cells := rows[i]
 		date, err := dmyToISO(get(cells, "תאריך"))
@@ -104,6 +105,12 @@ func ParseLeumiBank(r io.Reader, filename string) (*Parsed, error) {
 		if err != nil {
 			return nil, err
 		}
+		if strings.Contains(get(cells, "הערה"), "תנועות היום") {
+			// Today's movements are provisional (their reference carries a prefix) and are listed again, settled,
+			// in the next export; importing both would count them twice.
+			pending++
+			continue
+		}
 		notes := strings.TrimSpace(get(cells, "תאור מורחב") + " " + get(cells, "הערה"))
 		p.Lines = append(p.Lines, Line{
 			Date: date, Amount: amt, Scope: ledger.TxLocal, Kind: ledger.KindPurchase,
@@ -120,6 +127,10 @@ func ParseLeumiBank(r io.Reader, filename string) (*Parsed, error) {
 	if len(p.Lines) == 0 {
 		return nil, fmt.Errorf("%s: the movements table has no rows", filename)
 	}
+	if pending > 0 {
+		p.Warnings = append(p.Warnings, fmt.Sprintf("%d provisional movement(s) of today were left out; they appear in the next export", pending))
+	}
+	p.Balances = balances
 	if n := balanceBreaks(p.Lines, balances); n > 0 {
 		p.Warnings = append(p.Warnings, fmt.Sprintf("%d row(s) do not follow the running balance; check the file", n))
 	}
@@ -201,4 +212,54 @@ func cellText(n *html.Node) string {
 	}
 	walk(n)
 	return strings.Join(strings.Fields(strings.ReplaceAll(b.String(), " ", " ")), " ")
+}
+
+// Chain describes a bank export's running balance in chronological order.
+type Chain struct {
+	FirstDate, LastDate string
+	// BeforeFirst is the balance before the oldest line of the file (the first line's balance minus its amount).
+	BeforeFirst money.Money
+	// Closing is the balance after the newest line.
+	Closing money.Money
+}
+
+// BalanceChain reads the running balance of a bank export. Files list rows newest first or oldest first, and
+// some pin the current day's movement at the top; the orientation with fewer breaks wins. ok is false when
+// the file gives no usable balances.
+func (p *Parsed) BalanceChain() (Chain, bool) {
+	lines, bal := p.Lines, p.Balances
+	if len(lines) < 2 || len(bal) != len(lines) {
+		return Chain{}, false
+	}
+	if len(lines) > 2 && lines[0].Date > lines[1].Date {
+		lines, bal = lines[1:], bal[1:]
+	}
+	breaks := func(reverse bool) int {
+		n := 0
+		for i := 1; i < len(lines); i++ {
+			cur, prev := i, i-1
+			if reverse {
+				cur, prev = i-1, i
+			}
+			if bal[cur] != nil && bal[prev] != nil && bal[cur].Minor()-bal[prev].Minor() != lines[cur].Amount.Minor() {
+				n++
+			}
+		}
+		return n
+	}
+	reverse := breaks(true) < breaks(false)
+	chron := func(i int) int {
+		if reverse {
+			return len(lines) - 1 - i
+		}
+		return i
+	}
+	first, last := chron(0), chron(len(lines)-1)
+	if bal[first] == nil || bal[last] == nil {
+		return Chain{}, false
+	}
+	return Chain{
+		FirstDate: lines[first].Date, LastDate: lines[last].Date,
+		BeforeFirst: money.New(bal[first].Minor()-lines[first].Amount.Minor(), money.ILS), Closing: *bal[last],
+	}, true
 }
