@@ -24,6 +24,9 @@ const (
 func (s *Service) Settle(ctx context.Context, statementID, bankTxID string, amount *money.Money, src Source) (string, error) {
 	var id string
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := linkUnlinked(ctx, tx, statementID); err != nil {
+			return err
+		}
 		var accType, stmtCur string
 		var expected int64
 		err := tx.QueryRowContext(ctx, `SELECT a.account_type, a.currency, COALESCE((SELECT SUM(-amount_minor) FROM transactions WHERE statement_id = s.id), 0)

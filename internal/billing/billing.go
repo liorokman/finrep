@@ -224,6 +224,7 @@ func (s *Service) Statements(ctx context.Context, f StatementFilter) ([]Statemen
 			rows.Close()
 			return nil, err
 		}
+		st.Settlements = []SettlementInfo{}
 		c := money.Currency(cur)
 		st.Gross, st.Expected, st.Settled = money.New(gross, c), money.New(expected, c), money.New(0, c)
 		if printed.Valid {
@@ -239,6 +240,7 @@ func (s *Service) Statements(ctx context.Context, f StatementFilter) ([]Statemen
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	all, byID = mergeDerived(all, byID)
 
 	srows, err := s.st.QueryContext(ctx, `SELECT x.id, x.statement_id, b.id, b.date, b.payee_raw, x.amount_minor, x.source, -b.amount_minor, b.currency
 		FROM settlements x JOIN transactions b ON b.id = x.bank_transaction_id ORDER BY b.date, x.id`)
@@ -280,6 +282,39 @@ func (s *Service) Statements(ctx context.Context, f StatementFilter) ([]Statemen
 		return out[i].AccountName < out[j].AccountName
 	})
 	return out, nil
+}
+
+// mergeDerived folds charges that carry a bill date but no statement link into the recorded statement
+// of the same card and date: they are billed together and paid by the same debit.
+func mergeDerived(all []Statement, byID map[string]int) ([]Statement, map[string]int) {
+	var out []Statement
+	at := map[[2]string]int{} // (card, bill date) -> index in out of the recorded statement
+	for _, st := range all {
+		if st.ID != "" {
+			at[[2]string{st.AccountID, st.BillDate}] = len(out)
+			out = append(out, st)
+		}
+	}
+	for _, st := range all {
+		if st.ID != "" {
+			continue
+		}
+		if i, ok := at[[2]string{st.AccountID, st.BillDate}]; ok {
+			r := &out[i]
+			r.TxCount += st.TxCount
+			r.Gross = money.New(r.Gross.Minor()+st.Gross.Minor(), r.Gross.Currency())
+			r.Expected = money.New(r.Expected.Minor()+st.Expected.Minor(), r.Expected.Currency())
+			continue
+		}
+		out = append(out, st)
+	}
+	byID = map[string]int{}
+	for i, st := range out {
+		if st.ID != "" {
+			byID[st.ID] = i
+		}
+	}
+	return out, byID
 }
 
 func (f StatementFilter) matches(st Statement) bool {
@@ -327,7 +362,7 @@ func (s *Service) Materialize(ctx context.Context, accountID, billDate string) (
 		}
 		err := tx.QueryRowContext(ctx, `SELECT id FROM statements WHERE account_id = ? AND bill_date = ?`, accountID, billDate).Scan(&id)
 		if err == nil {
-			return nil
+			return linkUnlinked(ctx, tx, id)
 		}
 		if err != sql.ErrNoRows {
 			return err
@@ -347,4 +382,13 @@ func (s *Service) Materialize(ctx context.Context, accountID, billDate string) (
 		return err
 	})
 	return id, err
+}
+
+// linkUnlinked attaches charges that carry the statement's card and bill date but no statement yet.
+func linkUnlinked(ctx context.Context, tx *sql.Tx, statementID string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE transactions SET statement_id = ?1
+		WHERE statement_id IS NULL
+		  AND account_id = (SELECT account_id FROM statements WHERE id = ?1)
+		  AND bill_date = (SELECT bill_date FROM statements WHERE id = ?1)`, statementID)
+	return err
 }

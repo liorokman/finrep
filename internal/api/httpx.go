@@ -194,3 +194,16 @@ func list[T any](xs []T) []T {
 	}
 	return xs
 }
+
+// decodeStrict decodes a JSON string field (e.g. from a multipart form) with the same strictness as readJSON.
+func decodeStrict(raw string, dst any) error {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if dec.More() {
+		return errors.New("unexpected data after the object")
+	}
+	return nil
+}

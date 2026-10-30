@@ -591,3 +591,44 @@ func TestUnlinkedCardPayments(t *testing.T) {
 		t.Errorf("linkable: %+v", c)
 	}
 }
+
+func TestRuleDatedChargesJoinTheRecordedStatement(t *testing.T) {
+	e := newEnv(t)
+	a := e.purchase(e.cal, "2026-06-12", 10000, "ON THE PDF")
+	b := e.purchase(e.cal, "2026-06-20", 2500, "RULE DATED") // the rule bills it on 10 Jul as well
+	id := e.statement(e.cal, "2026-07-10", a)
+	e.s.AssignBillDates(ctx, "")
+	if d, src := e.billDate(b.ID); d != "2026-07-10" || src != "RULE" {
+		t.Fatalf("setup: %s/%s", d, src)
+	}
+	all, _ := e.s.Statements(ctx, StatementFilter{AccountIDs: []string{e.cal.ID}})
+	if len(all) != 1 || all[0].ID != id || all[0].TxCount != 2 || all[0].Expected.Minor() != 12500 || all[0].Gross.Minor() != 12500 {
+		t.Fatalf("one bill date must be one statement: %+v", all)
+	}
+	// Settling the recorded statement covers the straggler too, and the debit's date applies to both.
+	d := e.debit("2026-07-11", 12500, "כרטיסי אשראי-י")
+	if _, err := e.s.Settle(ctx, id, d.ID, nil, Manual); err != nil {
+		t.Fatal(err)
+	}
+	st := e.stmt(e.cal, "2026-07-10")
+	if st.Status != Paid || st.Settled.Minor() != 12500 || st.TxCount != 2 {
+		t.Fatalf("%+v", st)
+	}
+	for _, x := range []string{a.ID, b.ID} {
+		if bd, src := e.billDate(x); bd != "2026-07-11" || src != "BANK" {
+			t.Errorf("%s: %s/%s", x, bd, src)
+		}
+	}
+	// Materialize on an existing statement also links stragglers.
+	c := e.purchase(e.cal, "2026-06-25", 100, "LATE")
+	e.s.AssignBillDates(ctx, "")
+	if got, err := e.s.Materialize(ctx, e.cal.ID, "2026-07-10"); err != nil || got != id {
+		t.Fatalf("%s %v", got, err)
+	}
+	var sid *string
+	row, _ := e.l.GetTransaction(ctx, c.ID)
+	sid = row.StatementID
+	if sid == nil || *sid != id {
+		t.Fatal("straggler not linked")
+	}
+}

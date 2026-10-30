@@ -274,3 +274,39 @@ func (im *Importer) ResolveCard(ctx context.Context, last4 string) (*ledger.Acco
 	}
 	return nil, fmt.Errorf("%w: several cards end with %s (%s)", ledger.ErrInvalid, last4, strings.Join(names, ", "))
 }
+
+// Batch describes one committed import.
+type Batch struct {
+	ID          string
+	Source      string
+	Filename    string
+	AccountID   string
+	AccountName string
+	Rows        int // transactions currently linked to the batch
+	CreatedAt   string
+	UndoneAt    string
+}
+
+// ListBatches returns the most recent imports first.
+func (im *Importer) ListBatches(ctx context.Context, limit int) ([]Batch, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := im.st.QueryContext(ctx, `SELECT b.id, b.source, b.filename, COALESCE(b.account_id, ''), COALESCE(a.name, ''),
+			(SELECT COUNT(*) FROM transactions t WHERE t.batch_id = b.id), b.created_at, COALESCE(b.undone_at, '')
+		FROM import_batches b LEFT JOIN accounts a ON a.id = b.account_id
+		ORDER BY b.created_at DESC, b.rowid DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Batch
+	for rows.Next() {
+		var b Batch
+		if err := rows.Scan(&b.ID, &b.Source, &b.Filename, &b.AccountID, &b.AccountName, &b.Rows, &b.CreatedAt, &b.UndoneAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
