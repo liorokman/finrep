@@ -28,8 +28,9 @@ Package names: `store` (database), `conf` (configuration), `money`. The old `int
 - Isracard/Cal/Leumi PDF parsers rewritten on positioned cells behind the same importer interface. No LLM text-repair step: it only compensated for the old line-based extraction and was slow.
 - Acceptance: import-twice-inserts-zero property test; BOM/emoji/Windows-1255/`MM/DD/YYYY` fixtures; PDF fixture tests from `data/*.pdf`.
 
-## Phase 4 — Categorization
+## Phase 4 — Categorization  *(done: `internal/llm`, `internal/categorize`; HTTP/config wiring comes with Phase 8)*
 - Categorization runs: classifier model picks an existing category with confidence; ≥ 0.75 applies; otherwise the generator model creates (or reuses by name) a category. Records model, confidence and run id; batching, retry, cancel, run-scoped state; run undo.
+- Identical payees (per direction) are asked once per run; employer-coverage lines are not sent to the models and inherit their purchase's category. A starter category set is seeded once on first start (`categorize.SeedOnce`).
 - Acceptance (fake LLM servers): threshold behavior at 0.74/0.75; unknown ids ignored; new categories de-duplicated; manual categories never overwritten; undo restores state; cancel+restart does not leak state.
 
 ## Phase 5 — Card billing, statements and settlements

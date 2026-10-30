@@ -1,0 +1,521 @@
+package categorize
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/liorokman/finrep/internal/ledger"
+	"github.com/liorokman/finrep/internal/money"
+	"github.com/liorokman/finrep/internal/store"
+)
+
+var ctx = context.Background()
+
+type env struct {
+	t   *testing.T
+	st  *store.Store
+	l   *ledger.Ledger
+	acc *ledger.Account
+}
+
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	l := ledger.New(st)
+	acc := &ledger.Account{Name: "Cal", Type: ledger.CreditCard, Institution: "Cal", Owner: "Alice", Last4: "1001"}
+	if err := l.CreateAccount(ctx, acc); err != nil {
+		t.Fatal(err)
+	}
+	return &env{t, st, l, acc}
+}
+
+func (e *env) cat(en string, typ ledger.CategoryType) *ledger.Category {
+	c := &ledger.Category{NameEN: en, NameHE: en + "-he", Type: typ}
+	if err := e.l.CreateCategory(ctx, c); err != nil {
+		e.t.Fatal(err)
+	}
+	return c
+}
+
+func (e *env) tx(date string, minor int64, payee string) *ledger.Transaction {
+	x := &ledger.Transaction{AccountID: e.acc.ID, Date: date, Amount: money.New(minor, e.acc.Currency), PayeeRaw: payee}
+	if err := e.l.InsertTransaction(ctx, x); err != nil {
+		e.t.Fatal(err)
+	}
+	return x
+}
+
+func (e *env) get(id string) *ledger.Transaction {
+	x, err := e.l.GetTransaction(ctx, id)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return x
+}
+
+// fake is a scriptable model. fn sees the decoded prompt and returns the reply.
+type fake struct {
+	mu    sync.Mutex
+	calls int
+	fn    func(call int, p prompt) (string, error)
+}
+
+func (f *fake) Chat(c context.Context, model, system, user string) (string, error) {
+	f.mu.Lock()
+	f.calls++
+	n := f.calls
+	f.mu.Unlock()
+	var p prompt
+	if err := json.Unmarshal([]byte(user), &p); err != nil {
+		return "", err
+	}
+	return f.fn(n, p)
+}
+
+func (f *fake) count() int { f.mu.Lock(); defer f.mu.Unlock(); return f.calls }
+
+// classify answers every item with category id and confidence chosen by payee.
+func classify(pick func(payee string) (catID string, conf float64)) *fake {
+	return &fake{fn: func(_ int, p prompt) (string, error) {
+		var rs []map[string]any
+		for _, it := range p.Items {
+			id, conf := pick(it.Payee)
+			rs = append(rs, map[string]any{"id": it.ID, "category_id": id, "confidence": conf})
+		}
+		b, _ := json.Marshal(map[string]any{"results": rs})
+		return string(b), nil
+	}}
+}
+
+func generate(pick func(payee string) (en, he, typ string)) *fake {
+	return &fake{fn: func(_ int, p prompt) (string, error) {
+		var rs []map[string]any
+		for _, it := range p.Items {
+			en, he, typ := pick(it.Payee)
+			rs = append(rs, map[string]any{"id": it.ID, "name_en": en, "name_he": he, "type": typ})
+		}
+		b, _ := json.Marshal(map[string]any{"results": rs})
+		return string(b), nil
+	}}
+}
+
+func (e *env) svc(cl, ge Chatter, mod ...func(*Options)) *Service {
+	o := Options{Classifier: cl, Generator: ge, ClassifierModel: "decide", GeneratorModel: "write", Backoff: time.Millisecond}
+	for _, m := range mod {
+		m(&o)
+	}
+	return New(e.st, e.l, o)
+}
+
+func (e *env) run(s *Service) *Run {
+	e.t.Helper()
+	id, err := s.Start(ctx)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	s.Wait(id)
+	r, err := s.GetRun(ctx, id)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return r
+}
+
+func TestThresholdBoundary(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	hi := e.tx("2024-03-01", -1000, "AT-THRESHOLD")
+	lo := e.tx("2024-03-01", -1000, "JUST-BELOW")
+	cl := classify(func(p string) (string, float64) {
+		if p == "AT-THRESHOLD" {
+			return food.ID, 0.75
+		}
+		return food.ID, 0.74
+	})
+	ge := generate(func(string) (string, string, string) { return "Snacks", "חטיפים", "EXPENSE" })
+	r := e.run(e.svc(cl, ge))
+	if r.Status != "DONE" || r.Processed != 2 || r.Total != 2 {
+		t.Fatalf("%+v", r)
+	}
+	a := e.get(hi.ID)
+	if *a.CategoryID != food.ID || a.CategorizedBy != ledger.ByModel || *a.LLMConfidence != 0.75 || *a.RunID != r.ID {
+		t.Fatalf("at-threshold: %+v", a)
+	}
+	b := e.get(lo.ID)
+	if b.CategoryNameEN != "Snacks" || *b.CategoryID == food.ID {
+		t.Fatalf("below-threshold should go to the generator: %+v", b)
+	}
+	if ge.count() != 1 {
+		t.Fatalf("generator calls = %d", ge.count())
+	}
+}
+
+func TestGeneratorNotCalledWhenClassifierConfident(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	e.tx("2024-03-01", -1000, "SHUFERSAL")
+	ge := generate(func(string) (string, string, string) { return "X", "X", "EXPENSE" })
+	e.run(e.svc(classify(func(string) (string, float64) { return food.ID, 0.99 }), ge))
+	if ge.count() != 0 {
+		t.Fatal("generator must not be called")
+	}
+}
+
+func TestUnknownIDsAreIgnored(t *testing.T) {
+	e := newEnv(t)
+	e.cat("Food", ledger.Expense)
+	x := e.tx("2024-03-01", -1000, "MYSTERY")
+	// Classifier is "100% sure" of a category id that does not exist, and also answers an item that was never asked.
+	cl := &fake{fn: func(_ int, p prompt) (string, error) {
+		return `{"results":[{"id":"0","category_id":"made-up","confidence":1},{"id":"77","category_id":"x","confidence":1}]}`, nil
+	}}
+	ge := generate(func(string) (string, string, string) { return "Mystery Things", "דברים", "EXPENSE" })
+	e.run(e.svc(cl, ge))
+	if got := e.get(x.ID); got.CategoryNameEN != "Mystery Things" {
+		t.Fatalf("unknown category id must fall through to the generator: %+v", got)
+	}
+}
+
+func TestMissingAndLooseResponses(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	a := e.tx("2024-03-01", -1000, "A")
+	b := e.tx("2024-03-02", -1000, "B")
+	// Numeric ids, code fences and chatter; B is omitted by the classifier and so goes to the generator.
+	cl := &fake{fn: func(_ int, p prompt) (string, error) {
+		return "Sure!\n```json\n{\"results\":[{\"id\":" + p.Items[0].ID + ",\"category_id\":\"" + food.ID + "\",\"confidence\":0.9}]}\n```", nil
+	}}
+	ge := generate(func(string) (string, string, string) { return "Other Stuff", "אחר", "EXPENSE" })
+	e.run(e.svc(cl, ge))
+	first, second := e.get(a.ID), e.get(b.ID)
+	if first.CategoryNameEN == second.CategoryNameEN {
+		t.Fatalf("expected different categories, got %q for both", first.CategoryNameEN)
+	}
+	if first.CategoryNameEN != "Food" && second.CategoryNameEN != "Food" {
+		t.Fatal("neither item got the classified category")
+	}
+}
+
+func TestGeneratedCategoriesAreDeduplicated(t *testing.T) {
+	e := newEnv(t)
+	existing := e.cat("Pets", ledger.Expense)
+	x1 := e.tx("2024-03-01", -1000, "VET ONE")
+	x2 := e.tx("2024-03-02", -1000, "VET TWO")
+	x3 := e.tx("2024-03-03", -1000, "AQUARIUM")
+	cl := classify(func(string) (string, float64) { return "", 0 })
+	ge := generate(func(p string) (string, string, string) {
+		switch p {
+		case "VET ONE":
+			return "Veterinary", "וטרינר", "EXPENSE"
+		case "VET TWO":
+			return "veterinary", "וטרינר", "expense" // same name, different case
+		}
+		return "PETS", "חיות", "EXPENSE" // already exists, different case
+	})
+	e.run(e.svc(cl, ge))
+	if e.get(x1.ID).CategoryID == nil || *e.get(x1.ID).CategoryID != *e.get(x2.ID).CategoryID {
+		t.Fatal("same proposed name must map to one category")
+	}
+	if *e.get(x3.ID).CategoryID != existing.ID {
+		t.Fatal("proposal matching an existing category must reuse it")
+	}
+	cats, _ := e.l.ListCategories(ctx)
+	if len(cats) != 2 {
+		t.Fatalf("want 2 categories, got %d", len(cats))
+	}
+	vet, _ := e.l.FindCategoryByName(ctx, "Veterinary")
+	if vet.CreatedBy != ledger.ByLLM {
+		t.Fatalf("created_by = %s", vet.CreatedBy)
+	}
+}
+
+func TestIdenticalPayeesAreAskedOnce(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	for i := 1; i <= 5; i++ {
+		e.tx(fmt.Sprintf("2024-03-%02d", i), -1000, "Shufersal ")
+	}
+	e.tx("2024-03-09", 5000, "SHUFERSAL") // refund: other direction, asked separately
+	var seen []int
+	cl := &fake{fn: func(_ int, p prompt) (string, error) {
+		seen = append(seen, len(p.Items))
+		var rs []string
+		for _, it := range p.Items {
+			rs = append(rs, fmt.Sprintf(`{"id":"%s","category_id":"%s","confidence":0.9}`, it.ID, food.ID))
+		}
+		return `{"results":[` + strings.Join(rs, ",") + `]}`, nil
+	}}
+	r := e.run(e.svc(cl, nil))
+	if len(seen) != 1 || seen[0] != 2 || r.Processed != 6 {
+		t.Fatalf("items per request = %v, processed = %d", seen, r.Processed)
+	}
+}
+
+func TestManualCategoriesNeverOverwritten(t *testing.T) {
+	e := newEnv(t)
+	food, fun := e.cat("Food", ledger.Expense), e.cat("Fun", ledger.Expense)
+	manual := e.tx("2024-03-01", -1000, "MANUAL ONE")
+	racy := e.tx("2024-03-02", -1000, "CHANGED MID-RUN")
+	if _, err := e.l.BulkUpdate(ctx, []string{manual.ID}, ledger.TxUpdate{CategoryID: &fun.ID}); err != nil {
+		t.Fatal(err)
+	}
+	cl := &fake{fn: func(_ int, p prompt) (string, error) {
+		// The user categorizes a pending transaction while the model is thinking.
+		if _, err := e.l.BulkUpdate(ctx, []string{racy.ID}, ledger.TxUpdate{CategoryID: &fun.ID}); err != nil {
+			t.Error(err)
+		}
+		return fmt.Sprintf(`{"results":[{"id":"0","category_id":"%s","confidence":0.99}]}`, food.ID), nil
+	}}
+	r := e.run(e.svc(cl, nil))
+	if r.Total != 1 {
+		t.Fatalf("manual transaction must not be selected: %+v", r)
+	}
+	for _, id := range []string{manual.ID, racy.ID} {
+		got := e.get(id)
+		if *got.CategoryID != fun.ID || got.CategorizedBy != ledger.ByManual {
+			t.Fatalf("%s was overwritten: %+v", id, got)
+		}
+	}
+}
+
+func TestUndoRestoresState(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	a := e.tx("2024-03-01", -1000, "A")
+	b := e.tx("2024-03-02", -1000, "B")
+	c := e.tx("2024-03-03", -1000, "C")
+	cl := classify(func(p string) (string, float64) {
+		if p == "A" {
+			return food.ID, 0.9
+		}
+		return "", 0
+	})
+	ge := generate(func(p string) (string, string, string) {
+		if p == "B" {
+			return "New One", "חדש", "EXPENSE"
+		}
+		return "Kept One", "נשאר", "EXPENSE"
+	})
+	s := e.svc(cl, ge)
+	r := e.run(s)
+	// The user reviews C's category and puts a manual transaction into "Kept One"'s sibling.
+	if _, err := e.l.BulkUpdate(ctx, []string{c.ID}, ledger.TxUpdate{Reviewed: ptr(true)}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.Undo(ctx, r.ID)
+	if err != nil || n != 2 {
+		t.Fatalf("undone = %d, %v", n, err)
+	}
+	for _, id := range []string{a.ID, b.ID} {
+		got := e.get(id)
+		if got.CategoryID != nil || got.CategorizedBy != ledger.ByUnset || got.LLMConfidence != nil || got.RunID != nil {
+			t.Fatalf("not restored: %+v", got)
+		}
+	}
+	if got := e.get(c.ID); got.CategoryID == nil || got.CategorizedBy != ledger.ByModel {
+		t.Fatalf("reviewed assignment must survive undo: %+v", got)
+	}
+	if _, err := e.l.FindCategoryByName(ctx, "New One"); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("unused generated category must be removed, got %v", err)
+	}
+	if _, err := e.l.FindCategoryByName(ctx, "Kept One"); err != nil {
+		t.Fatalf("category still in use must stay: %v", err)
+	}
+	if _, err := s.Undo(ctx, r.ID); err == nil {
+		t.Fatal("second undo must fail")
+	}
+	if got, _ := s.GetRun(ctx, r.ID); got.Status != "UNDONE" {
+		t.Fatal(got.Status)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestRetryThenFail(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	x := e.tx("2024-03-01", -1000, "A")
+	flaky := &fake{fn: func(n int, p prompt) (string, error) {
+		switch n {
+		case 1:
+			return "", errors.New("connection reset")
+		case 2:
+			return "not json at all", nil
+		}
+		return fmt.Sprintf(`{"results":[{"id":"0","category_id":"%s","confidence":0.9}]}`, food.ID), nil
+	}}
+	if r := e.run(e.svc(flaky, nil)); r.Status != "DONE" || flaky.count() != 3 {
+		t.Fatalf("%+v calls=%d", r, flaky.count())
+	}
+	if e.get(x.ID).CategoryID == nil {
+		t.Fatal("not categorized after retries")
+	}
+
+	y := e.tx("2024-03-02", -1000, "B")
+	dead := &fake{fn: func(int, prompt) (string, error) { return "", errors.New("503 model not loaded") }}
+	r := e.run(e.svc(dead, nil))
+	if r.Status != "FAILED" || !strings.Contains(r.Error, "503") || dead.count() != 3 {
+		t.Fatalf("%+v calls=%d", r, dead.count())
+	}
+	if got := e.get(y.ID); got.CategoryID != nil || got.CategorizedBy != ledger.ByUnset {
+		t.Fatal("failed run must leave transactions untouched")
+	}
+}
+
+func TestCancelKeepsAppliedBatchesAndRestartFinishes(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	var ids []string
+	for i := 1; i <= 4; i++ {
+		ids = append(ids, e.tx(fmt.Sprintf("2024-03-%02d", i), -1000, fmt.Sprintf("SHOP %d", i)).ID)
+	}
+	var s *Service
+	cl := &fake{fn: func(n int, p prompt) (string, error) {
+		if n == 1 {
+			s.Cancel() // the user cancels while the first batch is in flight
+		}
+		var rs []string
+		for _, it := range p.Items {
+			rs = append(rs, fmt.Sprintf(`{"id":"%s","category_id":"%s","confidence":0.9}`, it.ID, food.ID))
+		}
+		return `{"results":[` + strings.Join(rs, ",") + `]}`, nil
+	}}
+	s = e.svc(cl, nil, func(o *Options) { o.BatchSize = 2 })
+	r := e.run(s)
+	if r.Status != "CANCELED" || r.Processed != 2 || r.Total != 4 {
+		t.Fatalf("%+v", r)
+	}
+	done := 0
+	for _, id := range ids {
+		if e.get(id).CategoryID != nil {
+			done++
+		}
+	}
+	if done != 2 {
+		t.Fatalf("expected the first batch to stay applied, got %d", done)
+	}
+	// Restart: only the remainder is pending, and nothing from the canceled run lingers.
+	r2 := e.run(s)
+	if r2.Status != "DONE" || r2.Total != 2 || r2.ID == r.ID {
+		t.Fatalf("%+v", r2)
+	}
+	for _, id := range ids {
+		if e.get(id).CategoryID == nil {
+			t.Fatal("restart left a transaction uncategorized")
+		}
+	}
+}
+
+func TestOnlyOneRunAtATime(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Food", ledger.Expense)
+	e.tx("2024-03-01", -1000, "A")
+	release := make(chan struct{})
+	cl := &fake{fn: func(_ int, p prompt) (string, error) {
+		<-release
+		return fmt.Sprintf(`{"results":[{"id":"0","category_id":"%s","confidence":0.9}]}`, food.ID), nil
+	}}
+	s := e.svc(cl, nil)
+	id, err := s.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(ctx); !errors.Is(err, ErrBusy) {
+		t.Fatalf("want ErrBusy, got %v", err)
+	}
+	if _, err := s.Undo(ctx, id); !errors.Is(err, ErrBusy) {
+		t.Fatalf("undo of a running run: %v", err)
+	}
+	close(release)
+	s.Wait(id)
+	if _, err := s.Start(ctx); !errors.Is(err, ErrNothingToDo) {
+		t.Fatalf("want ErrNothingToDo, got %v", err)
+	}
+}
+
+func TestEmployerCoverageInheritsPurchaseCategory(t *testing.T) {
+	e := newEnv(t)
+	food := e.cat("Restaurants", ledger.Expense)
+	p := e.tx("2024-03-01", -8000, "BURGER PLACE")
+	cov := &ledger.Transaction{AccountID: e.acc.ID, Date: "2024-03-01", Amount: money.New(8000, e.acc.Currency),
+		PayeeRaw: "חיוב תקציב סאפ", Kind: ledger.KindEmployerCoverage, CoversID: &p.ID}
+	if err := e.l.InsertTransaction(ctx, cov); err != nil {
+		t.Fatal(err)
+	}
+	cl := classify(func(payee string) (string, float64) {
+		if strings.Contains(payee, "סאפ") {
+			t.Error("coverage lines must not be sent to the model")
+		}
+		return food.ID, 0.95
+	})
+	r := e.run(e.svc(cl, nil))
+	if r.Total != 1 {
+		t.Fatalf("%+v", r)
+	}
+	if got := e.get(cov.ID); got.CategoryID == nil || *got.CategoryID != food.ID {
+		t.Fatalf("coverage did not inherit: %+v", got)
+	}
+	if _, err := e.svc(cl, nil).Undo(ctx, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.get(cov.ID); got.CategoryID != nil {
+		t.Fatal("undo must also clear inherited coverage")
+	}
+}
+
+func TestRecoverMarksStaleRunsFailed(t *testing.T) {
+	e := newEnv(t)
+	e.st.ExecContext(ctx, `INSERT INTO categorization_runs (id) VALUES ('stale')`)
+	s := e.svc(nil, nil)
+	if err := s.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := s.GetRun(ctx, "stale"); r.Status != "FAILED" || r.FinishedAt == "" {
+		t.Fatalf("%+v", r)
+	}
+	if _, err := s.GetRun(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+}
+
+func TestSeed(t *testing.T) {
+	e := newEnv(t)
+	n, err := SeedOnce(ctx, e.st, e.l)
+	if err != nil || n < 30 {
+		t.Fatalf("seeded %d, %v", n, err)
+	}
+	cats, _ := e.l.ListCategories(ctx)
+	types := map[ledger.CategoryType]int{}
+	for _, c := range cats {
+		types[c.Type]++
+		if c.NameHE == "" || c.CreatedBy != ledger.ByUser {
+			t.Fatalf("%+v", c)
+		}
+	}
+	if types[ledger.Expense] == 0 || types[ledger.Income] == 0 || types[ledger.Transfer] == 0 {
+		t.Fatalf("types: %v", types)
+	}
+	// A category the user deletes must not come back on the next start.
+	r, _ := e.l.FindCategoryByName(ctx, "Pets")
+	if err := e.l.DeleteCategory(ctx, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := SeedOnce(ctx, e.st, e.l); n != 0 || err != nil {
+		t.Fatalf("second SeedOnce: %d, %v", n, err)
+	}
+	// Seed itself is idempotent and fills only gaps.
+	if n, err := Seed(ctx, e.l); n != 1 || err != nil {
+		t.Fatalf("Seed after deletion: %d, %v", n, err)
+	}
+}

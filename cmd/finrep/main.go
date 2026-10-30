@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/liorokman/finrep/internal/categorize"
 	"github.com/liorokman/finrep/internal/conf"
+	"github.com/liorokman/finrep/internal/ledger"
 	"github.com/liorokman/finrep/internal/store"
 )
 
@@ -39,6 +41,13 @@ func run() error {
 		return err
 	}
 	defer st.Close()
+
+	led := ledger.New(st)
+	if n, err := categorize.SeedOnce(ctx, st, led); err != nil {
+		return fmt.Errorf("seed categories: %w", err)
+	} else if n > 0 {
+		slog.Info("seeded starter categories", "count", n)
+	}
 
 	if cfg.Mode == "mcp" {
 		return errors.New("mcp stdio mode is not implemented yet")
