@@ -1,6 +1,9 @@
 package jsonx
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSnake(t *testing.T) {
 	for in, want := range map[string]string{
@@ -27,5 +30,34 @@ func TestMarshalConvertsNestedKeysAndKeepsBigNumbers(t *testing.T) {
 	}
 	if _, err := Marshal(make(chan int)); err == nil {
 		t.Fatal("unmarshalable value accepted")
+	}
+}
+
+func TestNilSlicesAreEmptyListsNotNull(t *testing.T) {
+	type inner struct{ Items []int }
+	type out struct {
+		Months  []string
+		Nested  inner
+		Ptr     *inner
+		NilPtr  *inner
+		List    []inner
+		ByName  map[string][]int
+		Bytes   []byte
+		Number  *int
+		Untyped any
+	}
+	var nilInner *inner
+	raw, err := Marshal(out{Ptr: &inner{}, NilPtr: nilInner, List: []inner{{}}, ByName: map[string][]int{"a": nil}, Untyped: []string(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, want := range []string{`"months":[]`, `"nested":{"items":[]}`, `"ptr":{"items":[]}`, `"nil_ptr":null`, `"list":[{"items":[]}]`, `"by_name":{"a":[]}`, `"bytes":null`, `"number":null`, `"untyped":[]`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in %s", want, got)
+		}
+	}
+	if raw, _ := Marshal(nil); string(raw) != "null" {
+		t.Errorf("nil: %s", raw)
 	}
 }

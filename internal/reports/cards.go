@@ -97,7 +97,7 @@ func (s *Service) InstallmentForecast(ctx context.Context, f Filter) (*Forecast,
 			fm.Items = append(fm.Items, ForecastItem{Payee: k.payee, Amount: q.money(k.amount), Remaining: k.total - l.cur - i})
 		}
 	}
-	out := &Forecast{}
+	out := &Forecast{Months: []ForecastMonth{}, Outstanding: []CardBalance{}}
 	for _, fm := range byMonth {
 		sort.Slice(fm.Items, func(i, j int) bool { return fm.Items[i].Payee < fm.Items[j].Payee })
 		out.Months = append(out.Months, *fm)
