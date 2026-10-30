@@ -48,6 +48,9 @@ func parseCalRows(rows []pdfRow, filename string, opt PDFOptions) (*Parsed, erro
 			}
 		}
 		if strings.Contains(text, "לחיוב עתידי") && !strings.Contains(text, "₪") {
+			if len(pending) > 0 {
+				return nil, fmt.Errorf("%s: the future-charges section starts but %d charge(s) have no statement total", filename, len(pending))
+			}
 			future = true
 			continue
 		}
