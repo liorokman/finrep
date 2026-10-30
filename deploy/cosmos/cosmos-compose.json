@@ -1,7 +1,7 @@
 {
   "services": {
     "finrep": {
-      "image": "localhost:5000/finrep:0.1.2",
+      "image": "localhost:5000/finrep:0.1.3",
       "container_name": "finrep",
       "restart": "unless-stopped",
       "read_only": true,
