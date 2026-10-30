@@ -1,4 +1,5 @@
-# Example deployment behind a reverse proxy that terminates HTTPS.
+# Local run against the Authentik OIDC provider at http://localhost:8080 (the only redirect URI registered for local use).
+# For Cosmos Cloud use deploy/cosmos/cosmos-compose.json instead.
 # Put the secrets in ./secrets/ (one value per file, not committed) and adjust the OIDC settings.
 services:
   finrep:
@@ -10,18 +11,16 @@ services:
       - "8080:8080"
     environment:
       FINREP_AUTH: "on"
-      FINREP_OIDC_ISSUER: https://auth.example.com/application/o/finrep/
-      FINREP_OIDC_CLIENT_ID: finrep
-      FINREP_OIDC_REDIRECT: https://finrep.example.com/auth/callback
+      FINREP_OIDC_ISSUER: https://auth.example.com/application/o/fin-rep/
+      FINREP_OIDC_CLIENT_ID: <OIDC_CLIENT_ID>
+      FINREP_OIDC_REDIRECT: http://localhost:8080/auth/callback
       FINREP_OIDC_REQUIRED_GROUP: FinRep_Users
       FINREP_SESSION_SECRET_FILE: /run/secrets/session_secret   # at least 32 random bytes
-      FINREP_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret   # omit for a public (PKCE-only) client
       FINREP_MCP_TOKEN_FILE: /run/secrets/mcp_token             # omit to disable the /mcp endpoint
       FINREP_TRUSTED_PROXIES: 172.16.0.0/12                     # the reverse proxy's network
       FINREP_LOG_LEVEL: info
     secrets:
       - session_secret
-      - oidc_client_secret
       - mcp_token
     volumes:
       - finrep-data:/data
@@ -29,8 +28,6 @@ services:
 secrets:
   session_secret:
     file: ./secrets/session_secret
-  oidc_client_secret:
-    file: ./secrets/oidc_client_secret
   mcp_token:
     file: ./secrets/mcp_token
 

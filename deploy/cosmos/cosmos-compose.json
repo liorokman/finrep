@@ -1,0 +1,70 @@
+{
+  "services": {
+    "finrep": {
+      "image": "ghcr.io/liorokman/finrep:0.1.0",
+      "container_name": "finrep",
+      "restart": "unless-stopped",
+      "read_only": true,
+      "tmpfs": ["/tmp:size=64M"],
+      "environment": [
+        "FINREP_AUTH=on",
+        "FINREP_OIDC_ISSUER=https://auth.example.com/application/o/fin-rep/",
+        "FINREP_OIDC_CLIENT_ID=<OIDC_CLIENT_ID>",
+        "FINREP_OIDC_REDIRECT=https://finrep.example.com/auth/callback",
+        "FINREP_OIDC_REQUIRED_GROUP=FinRep_Users",
+        "FINREP_SESSION_SECRET=<SESSION_SECRET>",
+        "FINREP_MCP_TOKEN=<MCP_TOKEN>",
+        "FINREP_TRUSTED_PROXIES=172.16.0.0/12,10.0.0.0/8,192.168.0.0/16",
+        "FINREP_LOG_LEVEL=info",
+        "GOMEMLIMIT=200MiB",
+        "TZ=Asia/Jerusalem"
+      ],
+      "labels": {
+        "cosmos-force-network-secured": "true",
+        "cosmos-auto-update": "false"
+      },
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "finrep-data",
+          "target": "/data"
+        }
+      ],
+      "deploy": {
+        "resources": {
+          "limits": {
+            "cpus": "1.0",
+            "memory": "256M"
+          }
+        }
+      },
+      "routes": [
+        {
+          "Name": "finrep",
+          "Description": "FinRep personal finance ledger",
+          "UseHost": true,
+          "Host": "finrep.example.com",
+          "UsePathPrefix": false,
+          "Target": "http://finrep:8080",
+          "Mode": "SERVAPP",
+          "AuthEnabled": false,
+          "AdminOnly": false,
+          "SmartShield": {
+            "Enabled": true
+          },
+          "BlockCommonBots": true,
+          "BlockAPIAbuse": false,
+          "Timeout": 120000,
+          "ThrottlePerMinute": 3000,
+          "MaxBandwidth": 0,
+          "CORSOrigin": "",
+          "VerboseForwardHeader": false,
+          "DisableHeaderHardening": false
+        }
+      ]
+    }
+  },
+  "volumes": {
+    "finrep-data": {}
+  }
+}

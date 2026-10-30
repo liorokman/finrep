@@ -37,6 +37,8 @@ Run it behind a reverse proxy that terminates HTTPS and list the proxy's network
 so the app trusts its `X-Forwarded-*` headers (and only theirs). The session cookie is `Secure` over HTTPS,
 `HttpOnly` and `SameSite=Lax`; state-changing requests need a same-origin request plus a per-session CSRF token.
 
+For Cosmos Cloud with Authentik, import `deploy/cosmos/cosmos-compose.json` (see `deploy/cosmos/README.md`).
+
 ### Configuration
 
 Every option is a flag or an environment variable. Secrets can also be read from a file with the `_FILE` suffix.
