@@ -65,7 +65,7 @@ func (c *Client) Choose(ctx context.Context, model, state, instructions string, 
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return "", 0, fmt.Errorf("decision status %d: %s", res.StatusCode, msg)
+		return "", 0, &StatusError{Code: res.StatusCode, Msg: msg}
 	}
 	if jsonErr != nil {
 		return "", 0, fmt.Errorf("decision response is not JSON: %w", jsonErr)
@@ -83,3 +83,11 @@ func (c *Client) Choose(ctx context.Context, model, state, instructions string, 
 	}
 	return a.Choice, p, nil
 }
+
+// StatusError is a decision request the server answered with a non-2xx status.
+type StatusError struct {
+	Code int
+	Msg  string
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("decision status %d: %s", e.Code, e.Msg) }

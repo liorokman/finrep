@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/liorokman/finrep/internal/ledger"
+	"github.com/liorokman/finrep/internal/llm"
 	"github.com/liorokman/finrep/internal/store"
 )
 
@@ -388,6 +389,10 @@ func (s *worker) retry(ctx context.Context, model string, fn func() error) error
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		var se *llm.StatusError
+		if errors.As(last, &se) && se.Code == 400 {
+			return fmt.Errorf("model %q: %w", model, last) // asking again will not change a refusal
+		}
 		if attempt < s.o.Attempts {
 			select {
 			case <-ctx.Done():
@@ -403,6 +408,9 @@ const decisionInstructions = "Which category does this bank or credit-card trans
 
 // decide asks the decision model about each payee in turn. Options are keyed c0, c1, … so the model never
 // sees internal ids, and each is described by both of its names.
+// maxDecisionState caps the text sent to a decision model, in characters.
+const maxDecisionState = 120
+
 func (s *worker) decide(ctx context.Context, groups []*group, cats []catView) ([]classification, error) {
 	criteria := make(map[string]string, len(cats))
 	byKey := make(map[string]string, len(cats))
@@ -426,12 +434,20 @@ func (s *worker) decide(ctx context.Context, groups []*group, cats []catView) ([
 		if !strings.HasPrefix(g.amount, "-") {
 			state = "Money received: " + g.payee
 		}
+		// The category list already fills most of a small model's context, so keep the payee short.
+		if r := []rune(state); len(r) > maxDecisionState {
+			state = string(r[:maxDecisionState])
+		}
 		var key string
 		var p float64
 		err := s.retry(ctx, s.o.ClassifierModel, func() (err error) {
 			key, p, err = s.o.Decider.Choose(ctx, s.o.ClassifierModel, state, decisionInstructions, criteria)
 			return err
 		})
+		var se *llm.StatusError
+		if errors.As(err, &se) && se.Code == 400 {
+			continue // the model refused this one (for instance it does not fit its context): no match, not a failed run
+		}
 		if err != nil {
 			return nil, err
 		}

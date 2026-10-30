@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/liorokman/finrep/internal/ledger"
+	"github.com/liorokman/finrep/internal/llm"
 	"github.com/liorokman/finrep/internal/money"
 	"github.com/liorokman/finrep/internal/store"
 )
@@ -834,4 +835,38 @@ func TestFillDescriptionsOnceAndNeverOverwrites(t *testing.T) {
 	if n, _ := FillDescriptions(ctx, e.st, e.l); n != 0 {
 		t.Fatalf("second run filled %d", n)
 	}
+}
+
+func TestDecisionModelRefusalIsNoMatchNotAFailedRun(t *testing.T) {
+	e := newEnv(t)
+	e.cat("Food", ledger.Expense)
+	big := e.tx("2024-03-01", -1000, "TOO-BIG-FOR-THE-MODEL")
+	ok := e.tx("2024-03-02", -1000, "FINE")
+	calls := 0
+	d := deciderFunc(func(state string, criteria map[string]string) (string, float64, error) {
+		if strings.Contains(state, "TOO-BIG") {
+			calls++
+			return "", 0, &llm.StatusError{Code: 400, Msg: "exceeds the available context size"}
+		}
+		for k, v := range criteria {
+			if strings.HasPrefix(v, "Food") {
+				return k, 0.9, nil
+			}
+		}
+		return "", 0, errors.New("no Food")
+	})
+	ge := generate(func(string) (string, string, string) { return "Odd", "מוזר", "EXPENSE" })
+	r := e.run(e.svc(nil, ge, func(o *Options) { o.Decider = d }))
+	if r.Status != "DONE" || calls != 1 {
+		t.Fatalf("status=%s error=%q calls=%d", r.Status, r.Error, calls)
+	}
+	if e.get(ok.ID).CategoryNameEN != "Food" || e.get(big.ID).CategoryNameEN != "Odd" {
+		t.Fatalf("ok=%+v big=%+v", e.get(ok.ID), e.get(big.ID))
+	}
+}
+
+type deciderFunc func(state string, criteria map[string]string) (string, float64, error)
+
+func (f deciderFunc) Choose(_ context.Context, _, state, _ string, criteria map[string]string) (string, float64, error) {
+	return f(state, criteria)
 }
