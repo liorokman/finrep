@@ -29,10 +29,10 @@ export default {
   async render() {
     const host = h('div', { class: 'stack', style: { gap: 'var(--s-5)' } });
     const recent = h('div');
-    let step = 1, source = '', accountId = '', staged = null, result = null, busy = false;
+    let step = 1, source = '', accountId = '', staged = null, result = null, busy = false, csv = null;
 
-    const stepper = () => h('ol', { class: 'steps', style: { listStyle: 'none', padding: 0, margin: 0 }, 'aria-label': 'Import steps' },
-      ...['Choose a file', 'Check it', 'Done'].flatMap((t, i) => [i > 0 && h('li', { class: 'bar', 'aria-hidden': 'true' }), h('li', { class: ['step', step === i + 1 && 'on', step > i + 1 && 'done'], 'aria-current': step === i + 1 ? 'step' : null }, h('span', { class: 'n' }, step > i + 1 ? icon('check', 'sm') : String(i + 1)), t)]));
+    const stepper = () => { const cur = step === 'csv' ? 1 : step; return h('ol', { class: 'steps', style: { listStyle: 'none', padding: 0, margin: 0 }, 'aria-label': 'Import steps' },
+      ...['Choose a file', 'Check it', 'Done'].flatMap((t, i) => [i > 0 && h('li', { class: 'bar', 'aria-hidden': 'true' }), h('li', { class: ['step', cur === i + 1 && 'on', cur > i + 1 && 'done'], 'aria-current': cur === i + 1 ? 'step' : null }, h('span', { class: 'n' }, cur > i + 1 ? icon('check', 'sm') : String(i + 1)), t)])); };
 
     const accOptions = [{ value: '', label: 'Pick from the card number in the file' }, ...state.accounts.map((a) => ({ value: a.id, label: a.name + (a.last4 ? ' ···· ' + a.last4 : '') }))];
 
@@ -47,12 +47,38 @@ export default {
           selectField('What is it?', SOURCES, source, (v) => { source = v; }), selectField('Which account?', accOptions, accountId, (v) => { accountId = v; }))));
     }
 
-    async function stage(file) {
+    async function stage(file, mapping) {
+      const src = source || guess(file.name);
+      if (src === 'CSV' && !mapping) { return inspectCSV(file); }
       busy = true; draw();
-      const fd = new FormData(); fd.append('file', file); fd.append('source', source || guess(file.name)); if (accountId) fd.append('account_id', accountId);
+      const fd = new FormData(); fd.append('file', file); fd.append('source', src); if (accountId) fd.append('account_id', accountId); if (mapping) fd.append('mapping', JSON.stringify(mapping));
       try { staged = await api.upload('/api/v1/imports/stage', fd); staged.accountId = staged.account_id || accountId; step = 2; }
       catch (e) { toast(e.message); }
       busy = false; draw();
+    }
+
+    async function inspectCSV(file) {
+      busy = true; draw();
+      try {
+        const fd = new FormData(); fd.append('file', file);
+        const ins = await api.upload('/api/v1/imports/inspect-csv', fd);
+        const col = (re) => ins.columns.find((c) => re.test(c)) || '';
+        csv = { file, ins, m: { has_header: true, delimiter: ins.delimiter, date_column: col(/date|תאריך/i) || ins.columns[0], date_format: 'DD/MM/YYYY', payee_column_0: col(/payee|description|תיאור|בית עסק|merchant/i) || ins.columns[1] || ins.columns[0], amount_column: col(/amount|סכום|חיוב/i), debit_column: '', credit_column: '', invert_sign: false, bill_date_column: '', currency: 'ILS' } };
+        step = 'csv';
+      } catch (e) { toast(e.message); }
+      busy = false; draw();
+    }
+
+    function csvStep() {
+      const { ins, m } = csv; const cols = [{ value: '', label: '(none)' }, ...ins.columns.map((c) => ({ value: c, label: c }))];
+      const pick = (label, key, opts = cols) => selectField(label, opts, m[key], (v) => { m[key] = v; });
+      return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } }, h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'Match the columns in ' + csv.file.name), h('div', { class: 'sub' }, plural(ins.rows, 'row') + ' found. Tell FinRep which column is which; dates are never guessed.'))),
+        h('div', { class: 'table-wrap' }, h('table', { class: 't dense' }, h('thead', null, h('tr', null, ins.columns.map((c) => h('th', null, utBlock(c))))), h('tbody', null, ins.sample.slice(0, 4).map((r) => h('tr', null, r.map((c) => h('td', null, utBlock(c)))))))),
+        h('div', { class: 'row wrap', style: { alignItems: 'flex-end', marginTop: '16px' } }, pick('Date', 'date_column'), selectField('Date format', ins.date_formats.map((f) => ({ value: f, label: f })), m.date_format, (v) => { m.date_format = v; }), pick('Payee', 'payee_column_0'), pick('Amount (one column)', 'amount_column')),
+        h('div', { class: 'row wrap', style: { alignItems: 'flex-end', marginTop: '12px' } }, pick('…or Debit', 'debit_column'), pick('…and Credit', 'credit_column'), pick('Bill date (optional)', 'bill_date_column'),
+          h('label', { class: 'row small', style: { gap: '8px', paddingBottom: '8px' } }, h('input', { class: 'check', type: 'checkbox', checked: m.invert_sign, onchange: (e) => { m.invert_sign = e.target.checked; } }), 'Purchases are positive in this file')),
+        h('div', { class: 'row wrap', style: { alignItems: 'flex-end', marginTop: '12px' } }, selectField('Into account', [{ value: '', label: 'Choose…' }, ...state.accounts.map((a) => ({ value: a.id, label: a.name }))], accountId, (v) => { accountId = v; }))),
+        h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => { if (!accountId) return toast('Choose the account first'); const mm = { ...m, payee_columns: m.payee_column_0 ? [m.payee_column_0] : m.payee_columns }; delete mm.payee_column_0; stage(csv.file, mm); } }, 'Check the file'), h('button', { class: 'btn', type: 'button', onclick: () => { csv = null; step = 1; draw(); } }, 'Cancel')));
     }
 
     function checkStep() {
@@ -93,7 +119,7 @@ export default {
           h('button', { class: 'btn ghost', type: 'button', onclick: () => { step = 1; staged = null; draw(); } }, 'Import another file'))));
     }
 
-    function draw() { mount(host, h('div', { class: busy ? 'loading' : '' }, h('div', { style: { marginBottom: 'var(--s-4)' } }, stepper()), step === 1 ? chooseStep() : step === 2 ? checkStep() : doneStep())); }
+    function draw() { mount(host, h('div', { class: busy ? 'loading' : '' }, h('div', { style: { marginBottom: 'var(--s-4)' } }, stepper()), step === 1 ? chooseStep() : step === 'csv' ? csvStep() : step === 2 ? checkStep() : doneStep())); }
 
     async function loadRecent() {
       try {

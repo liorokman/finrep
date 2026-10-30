@@ -44,6 +44,16 @@ tasks:
     cmds:
       - go test ./...
 
+  test-ui:
+    desc: Browser smoke test (needs Google Chrome); starts a throwaway server
+    cmds:
+      - |
+        go build -o /tmp/finrep-uitest ./cmd/finrep
+        /tmp/finrep-uitest --auth=off --port=18091 --db-path=$(mktemp -d)/f.db >/dev/null 2>&1 &
+        pid=$!; sleep 1
+        node internal/webui/uitest/smoke.mjs http://127.0.0.1:18091; rc=$?
+        kill $pid; exit $rc
+
   test-race:
     desc: Run all Go tests with the race detector
     cmds:

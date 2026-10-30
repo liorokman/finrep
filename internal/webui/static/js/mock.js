@@ -295,6 +295,7 @@ export async function mockRequest(method, path, { params = {}, body } = {}) {
     { id: 'b3', source: 'CAL_PDF', filename: '2026-10.pdf', account_name: 'Cal 1001', rows: 38, created_at: '2026-10-11 09:12:03', undone_at: '' },
     { id: 'b2', source: 'LEUMI_BANK_XLS', filename: 'תנועות בחשבון 30_10_2026.xls', account_name: 'Leumi checking', rows: 117, created_at: '2026-10-30 08:01:44', undone_at: '' },
     { id: 'b1', source: 'ISRACARD_PDF', filename: 'Isracard-2026-09.pdf', account_name: 'Isracard 1002', rows: 22, created_at: '2026-09-11 18:40:10', undone_at: '' }] };
+  if (path === '/api/v1/imports/inspect-csv') return { delimiter: ',', columns: ['Date', 'Description', 'Amount'], sample: [['30/10/2026', 'שופרסל דיל', '-342.90'], ['29/10/2026', 'WOLT', '-91.80']], rows: 214, date_formats: ['DD/MM/YYYY', 'DD/MM/YY', 'MM/DD/YYYY', 'YYYY-MM-DD', 'DD.MM.YYYY', 'DD-MM-YYYY'] };
   if (path === '/api/v1/imports/stage') {
     const sid = id('stage'); const acc = ACC[1]; staged.set(sid, 1);
     return { stage_id: sid, source: 'CAL_PDF', filename: body.filename, last4: '1001', line_count: 41, account_id: acc.id, statements: [{ bill_date: '2026-11-10', printed_total: M(1290440) }], warnings: ['2 lines are in a foreign currency; the issuer-billed amount is used.'],
