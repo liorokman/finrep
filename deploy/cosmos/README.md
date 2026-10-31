@@ -9,15 +9,14 @@
 - Issuer: `https://auth.example.com/application/o/fin-rep/` (matches the discovery document).
 
 ## 2. The image
-Cosmos always pulls the image from a registry, even when it is already on the host. The first deployment used a
-throwaway registry on the Cosmos host itself (Docker allows plain HTTP to `localhost`), so nothing was published:
+Cosmos always pulls the image from a registry, even when it is already on the host. The image lives in the zot registry
+at `registry.example.com`. Log in once (`docker login registry.example.com`) and give Cosmos the same
+credentials, or its pull is refused. Then:
 
-    docker build -t finrep:0.1.0 .
-    docker save finrep:0.1.0 | ssh cosmos.example.com docker load
-    ssh cosmos.example.com 'docker run -d --name finrep-tmp-registry -p 127.0.0.1:5000:5000 registry:2 &&
-      docker tag finrep:0.1.0 localhost:5000/finrep:0.1.0 && docker push localhost:5000/finrep:0.1.0'
+    docker build -t registry.example.com/finrep:0.1.7 .
+    docker push registry.example.com/finrep:0.1.7
 
-The compose file uses `localhost:5000/finrep:0.1.0`. For a registry such as ghcr.io, push there and change the tag.
+The compose file uses `registry.example.com/finrep:0.1.7`; change the tag there for each release.
 
 ## 3. Secrets and import into Cosmos
 Cosmos did not pass secret-looking environment values through unchanged, so the two secrets are read from files in
@@ -27,7 +26,7 @@ the data volume (`FINREP_SESSION_SECRET_FILE`, `FINREP_MCP_TOKEN_FILE`). Create 
     head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '='   # MCP bearer token; drop the env line to disable /mcp
 
     printf %s "$VALUE" | ssh cosmos 'docker run --rm -i --user root --entrypoint sh -v finrep-data:/data \
-      localhost:5000/finrep:0.1.6 -c "cat > /data/mcp_token && chown 10001:10001 /data/mcp_token && chmod 400 /data/mcp_token"'
+      registry.example.com/finrep:0.1.7 -c "cat > /data/mcp_token && chown 10001:10001 /data/mcp_token && chmod 400 /data/mcp_token"'
 
 Then create or update the service. Cosmos replaces the container and the route when the name already exists:
 
