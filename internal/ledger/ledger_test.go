@@ -439,3 +439,27 @@ func TestCategoryDescription(t *testing.T) {
 		t.Fatalf("the limit counts characters, not bytes: %v", err)
 	}
 }
+
+func TestListCategoriesCountsTransactions(t *testing.T) {
+	l := newLedger(t)
+	a := mustAccount(t, l, "A", Bank)
+	used := mustCategory(t, l, "Used", Expense)
+	mustCategory(t, l, "Empty", Expense)
+	for i, d := range []string{"2026-06-01", "2026-06-02"} {
+		x := tx(a, d, -100-int64(i), "p")
+		x.CategoryID = &used.ID
+		mustInsert(t, l, x)
+	}
+	mustInsert(t, l, tx(a, "2026-06-03", -300, "q")) // uncategorized
+	cats, err := l.ListCategories(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, c := range cats {
+		got[c.NameEN] = c.TxCount
+	}
+	if got["Used"] != 2 || got["Empty"] != 0 {
+		t.Fatalf("counts: %v", got)
+	}
+}

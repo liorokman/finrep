@@ -243,3 +243,6 @@ button.cardtile.on { box-shadow: 0 0 0 2px var(--accent); }
 .cat-t td { height: auto; padding-block: 7px; }
 .cat-t td .ut-block { white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .cat-t .c-he, .cat-t .c-type { display: none; } .cat-t th:nth-child(2), .cat-t td:nth-child(2), .cat-t th:nth-child(3), .cat-t td:nth-child(3) { display: none; } }
+.cat-t .c-count { width: 110px; }
+a.tx-count { color: var(--accent); text-decoration: none; font-variant-numeric: tabular-nums; }
+a.tx-count:hover { text-decoration: underline; }

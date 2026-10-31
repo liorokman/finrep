@@ -321,7 +321,7 @@ export async function mockRequest(method, path, { params = {}, body } = {}) {
   let m;
   if (path === '/api/v1/auth/me') return { auth_enabled: false, authenticated: true, user: { sub: 'local', name: 'Alice Example', email: 'alice@example.com' } };
   if (path === '/api/v1/accounts') return { items: ACC.map((a) => ({ ...a, balance: M(balance(a, TODAY)), opening_balance: M(a.type === 'BANK' ? OPENING : 0) })) };
-  if (path === '/api/v1/categories' && method === 'GET') return { items: CATS.filter((c) => !params.created_by || c.created_by === params.created_by) };
+  if (path === '/api/v1/categories' && method === 'GET') return { items: CATS.map((c) => ({ ...c, tx_count: TX.filter((t) => t.category_id === c.id).length })).filter((c) => !params.created_by || c.created_by === params.created_by) };
   if (path === '/api/v1/categories' && method === 'POST') {
     if (CATS.some((c) => c.name_en.toLowerCase() === (body.name_en || '').toLowerCase())) throw new MockError(409, 'already exists');
     const c = { id: id('cat'), name_en: body.name_en, name_he: body.name_he || body.name_en, parent_id: null, color_hex: PAL[CATS.length % 8], icon: 'tag', type: body.type, monthly_budget: body.monthly_budget_minor ? M(body.monthly_budget_minor) : null, description: body.description || '', created_by: 'USER' };

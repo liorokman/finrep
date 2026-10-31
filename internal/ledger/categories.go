@@ -40,6 +40,7 @@ type Category struct {
 	Description   string       // what belongs here; shown to the categorization model
 	CreatedBy     Creator
 	CreatedAt     string
+	TxCount       int // transactions assigned to it; filled by ListCategories only
 }
 
 // MaxDescription bounds a category description, which is sent to the model with every request.
@@ -168,7 +169,27 @@ func (l *Ledger) ListCategories(ctx context.Context) ([]Category, error) {
 		}
 		out = append(out, *c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	counts, err := l.st.QueryContext(ctx, `SELECT category_id, COUNT(*) FROM transactions WHERE category_id IS NOT NULL GROUP BY category_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer counts.Close()
+	n := map[string]int{}
+	for counts.Next() {
+		var id string
+		var k int
+		if err := counts.Scan(&id, &k); err != nil {
+			return nil, err
+		}
+		n[id] = k
+	}
+	for i := range out {
+		out[i].TxCount = n[out[i].ID]
+	}
+	return out, counts.Err()
 }
 
 // UpdateCategory replaces the editable fields of a category.

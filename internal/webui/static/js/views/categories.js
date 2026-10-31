@@ -53,6 +53,7 @@ async function remove(cat) {
 const row = (c, { review } = {}) => h('tr', null,
   h('td', null, h('div', { class: 'row', style: { gap: '9px' } }, h('i', { class: 'dot', style: { '--c': c.color_hex, width: '10px', height: '10px', borderRadius: '50%', background: 'var(--c)', flex: 'none' } }), h('span', { style: { minWidth: 0 } }, utBlock(c.name_en, 'strong'), c.description && utBlock(c.description, 'sub muted xs')))),
   h('td', null, utBlock(c.name_he)), h('td', { class: 'muted small' }, TYPE_LABEL[c.type]),
+  h('td', { class: 'num' }, h('a', { class: 'tx-count', href: '#/transactions?category=' + encodeURIComponent(c.id) + '&period=all', title: 'Show these transactions (all time)' }, String(c.tx_count || 0))),
   h('td', { class: 'num' }, c.monthly_budget ? h('span', { class: 'amount' }, money(c.monthly_budget, { whole: true })) : h('span', { class: 'muted' }, '–')),
   h('td', { class: 'num' }, h('div', { class: 'row', style: { justifyContent: 'flex-end', gap: '2px' } },
     review && h('button', { class: 'btn sm', type: 'button', onclick: async () => { try { await api.patch('/api/v1/categories/' + c.id, { keep: true }); toast('Kept'); reload(); } catch (e) { toast(e.message); } } }, icon('check', 'sm'), 'Keep'),
@@ -61,8 +62,8 @@ const row = (c, { review } = {}) => h('tr', null,
     h('button', { class: 'btn ghost icon-only sm', type: 'button', 'aria-label': 'Delete ' + c.name_en, onclick: () => remove(c) }, icon('trash', 'sm')))));
 
 const table = (cats, opts) => h('div', { class: 'table-wrap' }, h('table', { class: 't dense cat-t' },
-  h('colgroup', null, h('col', { class: 'c-name' }), h('col', { class: 'c-he' }), h('col', { class: 'c-type' }), h('col', { class: 'c-budget' }), h('col', { class: opts && opts.review ? 'c-act wide' : 'c-act' })),
-  h('thead', null, h('tr', null, ['English', 'עברית', 'Counts as', 'Budget / month', ''].map((c, i) => h('th', { class: i === 3 ? 'num' : '' }, c)))), h('tbody', null, cats.map((c) => row(c, opts)))));
+  h('colgroup', null, h('col', { class: 'c-name' }), h('col', { class: 'c-he' }), h('col', { class: 'c-type' }), h('col', { class: 'c-count' }), h('col', { class: 'c-budget' }), h('col', { class: opts && opts.review ? 'c-act wide' : 'c-act' })),
+  h('thead', null, h('tr', null, ['English', 'עברית', 'Counts as', 'Transactions', 'Budget / month', ''].map((c, i) => h('th', { class: i === 3 || i === 4 ? 'num' : '' }, c)))), h('tbody', null, cats.map((c) => row(c, opts)))));
 
 export default {
   id: 'categories', title: 'Categories', filters: [],
