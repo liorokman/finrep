@@ -60,7 +60,8 @@ const row = (c, { review } = {}) => h('tr', null,
     h('button', { class: 'btn ghost icon-only sm', type: 'button', 'aria-label': 'Merge ' + c.name_en, title: 'Merge into another', onclick: () => mergeInto(c) }, icon('swap', 'sm')),
     h('button', { class: 'btn ghost icon-only sm', type: 'button', 'aria-label': 'Delete ' + c.name_en, onclick: () => remove(c) }, icon('trash', 'sm')))));
 
-const table = (cats, opts) => h('div', { class: 'table-wrap' }, h('table', { class: 't dense' },
+const table = (cats, opts) => h('div', { class: 'table-wrap' }, h('table', { class: 't dense cat-t' },
+  h('colgroup', null, h('col', { class: 'c-name' }), h('col', { class: 'c-he' }), h('col', { class: 'c-type' }), h('col', { class: 'c-budget' }), h('col', { class: opts && opts.review ? 'c-act wide' : 'c-act' })),
   h('thead', null, h('tr', null, ['English', 'עברית', 'Counts as', 'Budget / month', ''].map((c, i) => h('th', { class: i === 3 ? 'num' : '' }, c)))), h('tbody', null, cats.map((c) => row(c, opts)))));
 
 export default {

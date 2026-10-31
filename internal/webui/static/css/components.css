@@ -235,3 +235,11 @@ button.cardtile.on { box-shadow: 0 0 0 2px var(--accent); }
   .heat { grid-template-columns: minmax(110px, 140px) repeat(var(--cols), 44px); }
   .drawer { width: 100vw; }
 }
+
+/* Categories: fixed layout so the actions are always visible; long descriptions wrap */
+.cat-t { table-layout: fixed; }
+.cat-t .c-he { width: 22%; } .cat-t .c-type { width: 100px; } .cat-t .c-budget { width: 120px; }
+.cat-t .c-act { width: 112px; } .cat-t .c-act.wide { width: 190px; }
+.cat-t td { height: auto; padding-block: 7px; }
+.cat-t td .ut-block { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .cat-t .c-he, .cat-t .c-type { display: none; } .cat-t th:nth-child(2), .cat-t td:nth-child(2), .cat-t th:nth-child(3), .cat-t td:nth-child(3) { display: none; } }
