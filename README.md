@@ -21,6 +21,29 @@ Open `/?mock=0` to switch to your own, empty ledger.
 
 ## Running it for real
 
+There are three login modes, chosen with `--auth`:
+
+| Mode | Use |
+|---|---|
+| `on` (default) | OpenID Connect, described below. |
+| `local` | A username and password kept in the application's own database, for installs without an identity provider. |
+| `off` | No login. Development only, and only on a loopback address. |
+
+### Local login (`--auth=local`)
+
+No OIDC settings and no session secret are needed. The first time the web interface is opened it asks you to
+create the admin user (a username and a password of at least 10 characters); after that it shows a sign-in
+form. The password is stored only as a salted PBKDF2-SHA256 hash in the SQLite database, and **Settings →
+Password** changes it (it asks for the current password and signs out every other session). Repeated wrong
+passwords from one address are refused for 15 minutes. If `FINREP_SESSION_SECRET` is not set, the application
+creates a signing key for the sessions and keeps it in the database.
+
+Until the admin user exists, whoever reaches the page first can create it, so do the first run before exposing
+the port, or keep it on a private network until then. There is no password reset: if you lose the password,
+stop the application and run `DELETE FROM local_auth;` on the database, then create the user again.
+
+### OIDC login
+
 Login uses OpenID Connect (authorization code with PKCE), for example with Authentik. Only users whose ID
 token lists the group `FinRep_Users` (configurable) can sign in.
 
@@ -47,11 +70,11 @@ Every option is a flag or an environment variable. Secrets can also be read from
 |---|---|---|
 | Port | `--port` / `FINREP_PORT` | default 8080 |
 | Database | `--db-path` / `FINREP_DB_PATH` | SQLite file; created and migrated on start |
-| Login | `--auth` / `FINREP_AUTH` | `on` (default) or `off` |
+| Login | `--auth` / `FINREP_AUTH` | `on` (OIDC, default), `local` (password in the database) or `off` |
 | OIDC issuer, client | `--oidc-issuer`, `--oidc-client-id`, `--oidc-redirect` | the redirect URL ends in `/auth/callback` |
 | OIDC client secret | `FINREP_OIDC_CLIENT_SECRET[_FILE]` | optional; environment only |
 | Required group | `--oidc-required-group` (default `FinRep_Users`), `--oidc-groups-claim` (default `groups`) | the group cannot be empty |
-| Session secret | `FINREP_SESSION_SECRET[_FILE]` | at least 32 bytes; required with login on |
+| Session secret | `FINREP_SESSION_SECRET[_FILE]` | at least 32 bytes; required with OIDC login, optional with `local` |
 | MCP token | `FINREP_MCP_TOKEN[_FILE]` | at least 16 characters; empty disables HTTP MCP |
 | Trusted proxies | `--trusted-proxies` / `FINREP_TRUSTED_PROXIES` | comma-separated CIDRs |
 | Upload limit | `--max-upload-mb` / `FINREP_MAX_UPLOAD_MB` | default 10 |

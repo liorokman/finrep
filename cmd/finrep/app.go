@@ -111,6 +111,27 @@ func build(ctx context.Context, cfg *conf.Config, st *store.Store) (*app, error)
 		}
 		deps.Sessions, deps.OIDC = sessions, oidc
 	}
+	if cfg.LocalAuth {
+		// The signing key is the configured one, or one the application keeps in its database.
+		secret := cfg.SessionSecret
+		if len(secret) == 0 {
+			var err error
+			if secret, err = authn.SessionSecret(ctx, st.DB); err != nil {
+				return nil, fmt.Errorf("session secret: %w", err)
+			}
+		}
+		sessions, err := authn.NewSessions(secret)
+		if err != nil {
+			return nil, err
+		}
+		local := authn.NewLocal(st.DB)
+		if setup, err := local.SetupRequired(ctx); err != nil {
+			return nil, fmt.Errorf("read local user: %w", err)
+		} else if setup {
+			slog.Warn("no admin user yet: the first person to open the web interface will create it")
+		}
+		deps.Sessions, deps.Local = sessions, local
+	}
 	srv, err := api.New(deps)
 	if err != nil {
 		return nil, err

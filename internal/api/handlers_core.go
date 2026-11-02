@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -46,10 +48,24 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// me tells the UI who is logged in and gives it the CSRF token for state-changing requests.
+// me tells the UI who is logged in and gives it the CSRF token for state-changing requests. mode says how
+// to log in: "oidc" (redirect to /auth/login), "local" (the UI shows its own form) or "none" (no login).
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"auth_enabled": s.d.Config.AuthEnabled, "authenticated": false}
-	if !s.d.Config.AuthEnabled {
+	cfg := s.d.Config
+	out := map[string]any{"auth_enabled": cfg.AuthEnabled || cfg.LocalAuth, "authenticated": false, "mode": "none"}
+	switch {
+	case cfg.LocalAuth:
+		out["mode"] = "local"
+		if setup, err := s.d.Local.SetupRequired(r.Context()); err != nil {
+			fail(w, r, err)
+			return
+		} else {
+			out["setup_required"] = setup
+		}
+	case cfg.AuthEnabled:
+		out["mode"] = "oidc"
+	}
+	if !cfg.AuthEnabled && !cfg.LocalAuth {
 		out["authenticated"] = true
 		out["user"] = userFrom(r.Context())
 	} else if sess := sessionFrom(r.Context()); sess != nil {
@@ -58,6 +74,112 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		out["csrf_token"] = sess.CSRF
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ---- local login ----
+
+type credentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// startLocalSession logs the user in: it issues the session cookie and answers like /auth/me.
+func (s *Server) startLocalSession(w http.ResponseWriter, r *http.Request, u authn.User, gen int64) {
+	sess, err := s.d.Sessions.IssueGen(w, authn.Inspect(r, s.d.Config.TrustedProxy).Secure(), u, gen)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"auth_enabled": true, "authenticated": true, "mode": "local", "setup_required": false,
+		"user": sess.User, "csrf_token": sess.CSRF})
+}
+
+// localError turns the authn package's errors into responses. Anything else is an internal error.
+func localError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, authn.ErrBadLogin):
+		writeError(w, http.StatusUnauthorized, err.Error())
+	case errors.Is(err, authn.ErrTooMany):
+		w.Header().Set("Retry-After", "900")
+		writeError(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, authn.ErrSetupDone):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, authn.ErrInvalid):
+		writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), authn.ErrInvalid.Error()+": "))
+	default:
+		fail(w, r, err)
+	}
+}
+
+func (s *Server) localAvailable(w http.ResponseWriter) bool {
+	if !s.d.Config.LocalAuth {
+		writeError(w, http.StatusNotFound, "local login is not enabled")
+		return false
+	}
+	return true
+}
+
+// localSetup creates the first (and only) admin user and logs them in. It works exactly once.
+func (s *Server) localSetup(w http.ResponseWriter, r *http.Request) {
+	if !s.localAvailable(w) {
+		return
+	}
+	var in credentials
+	if err := readJSON(w, r, &in); err != nil {
+		fail(w, r, err)
+		return
+	}
+	u, gen, err := s.d.Local.Setup(r.Context(), in.Username, in.Password)
+	if err != nil {
+		localError(w, r, err)
+		return
+	}
+	slog.Info("local admin user created", "user", u.Subject)
+	s.startLocalSession(w, r, u, gen)
+}
+
+func (s *Server) localLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.localAvailable(w) {
+		return
+	}
+	var in credentials
+	if err := readJSON(w, r, &in); err != nil {
+		fail(w, r, err)
+		return
+	}
+	ip := authn.Inspect(r, s.d.Config.TrustedProxy).ClientIP.String()
+	u, gen, err := s.d.Local.Authenticate(r.Context(), ip, in.Username, in.Password)
+	if err != nil {
+		if errors.Is(err, authn.ErrBadLogin) {
+			slog.Warn("failed login", "ip", ip)
+		}
+		localError(w, r, err)
+		return
+	}
+	s.startLocalSession(w, r, u, gen)
+}
+
+// changePassword replaces the admin password. Every other session ends; this one continues under the new generation.
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	if !s.localAvailable(w) {
+		return
+	}
+	var in struct {
+		Current string `json:"current_password"`
+		New     string `json:"new_password"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		fail(w, r, err)
+		return
+	}
+	ip := authn.Inspect(r, s.d.Config.TrustedProxy).ClientIP.String()
+	gen, err := s.d.Local.ChangePassword(r.Context(), ip, in.Current, in.New)
+	if err != nil {
+		localError(w, r, err)
+		return
+	}
+	slog.Info("local admin password changed", "user", userFrom(r.Context()).Subject)
+	s.startLocalSession(w, r, userFrom(r.Context()), gen)
 }
 
 // ---- accounts ----

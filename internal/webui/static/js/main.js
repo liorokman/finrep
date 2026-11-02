@@ -2,6 +2,7 @@ import { h, mount, $ } from './dom.js';
 import { icon } from './icons.js';
 import { api, setCSRF, todayISO, ApiError } from './api.js';
 import { state, setReference, setFilters, subscribe, owners, PERIODS, periodRange, choosePeriod } from './state.js';
+import { authScreen } from './auth.js';
 import { segmented, selectField, dateField, errorAlert, skeleton } from './ui.js';
 
 const params = new URLSearchParams(location.search);
@@ -124,7 +125,9 @@ async function render() {
 async function boot() {
   try {
     state.today = todayISO();
-    const me = await api.get('/api/v1/auth/me');
+    let me = await api.get('/api/v1/auth/me');
+    state.authMode = me.mode;
+    if (!me.authenticated && me.mode === 'local') me = await authScreen(me.setup_required);
     if (!me.authenticated) { location.href = '/auth/login?next=' + encodeURIComponent(location.pathname + location.hash); return; }
     setCSRF(me.csrf_token); state.me = me.user; state.authEnabled = me.auth_enabled;
     const [accs, cats] = await Promise.all([api.get('/api/v1/accounts'), api.get('/api/v1/categories')]);

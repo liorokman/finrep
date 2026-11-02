@@ -32,7 +32,8 @@ async function request(method, path, { params, body, form } = {}) {
   let res;
   try { res = await fetch(path + query(params), { method, headers, body: payload, credentials: 'same-origin' }); }
   catch (e) { throw new ApiError(0, 'Cannot reach the server'); }
-  if (res.status === 401) { location.href = '/auth/login?next=' + encodeURIComponent(location.pathname + location.hash); throw new ApiError(401, 'Login required'); }
+  if (res.status === 401 && state.authMode === 'local' && !path.startsWith('/api/v1/auth/')) { location.reload(); throw new ApiError(401, 'Login required'); } // back to the sign-in form
+  if (res.status === 401 && state.authMode !== 'local') { location.href = '/auth/login?next=' + encodeURIComponent(location.pathname + location.hash); throw new ApiError(401, 'Login required'); }
   if (res.status === 204) return null;
   let data = null;
   try { data = await res.json(); } catch (e) { /* not JSON */ }

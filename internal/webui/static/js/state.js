@@ -5,7 +5,7 @@ const KEY = 'finrep.prefs.v1';
 const listeners = new Map();
 
 export const state = {
-  me: null, today: '', mock: false,
+  me: null, today: '', mock: false, authMode: 'none', // authMode: 'oidc', 'local' or 'none'
   accounts: [], categories: [], accById: new Map(), catById: new Map(),
   filters: { period: '12m', owner: '', measure: 'GROSS', from: '', to: '' }, // from and to are the custom range, used by the 'range' period
   prefs: { catLang: 'en', dense: false },

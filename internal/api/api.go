@@ -32,6 +32,7 @@ type Deps struct {
 	Settings   *settings.Store
 	Sessions   *authn.Sessions // required when auth is on
 	OIDC       *authn.OIDC     // required when auth is on
+	Local      *authn.Local    // required with local login (--auth=local), which also needs Sessions
 	Now        func() time.Time
 }
 
@@ -48,6 +49,9 @@ func New(d Deps) (*Server, error) {
 	}
 	if d.Config.AuthEnabled && (d.Sessions == nil || d.OIDC == nil) {
 		return nil, fmt.Errorf("api: auth is on but sessions or OIDC are missing")
+	}
+	if d.Config.LocalAuth && (d.Sessions == nil || d.Local == nil) {
+		return nil, fmt.Errorf("api: local login is on but sessions or the local user store are missing")
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -87,12 +91,13 @@ func sessionFrom(ctx context.Context) *authn.Session {
 
 var publicPaths = map[string]bool{
 	"/healthz": true, "/auth/login": true, "/auth/callback": true, "/api/v1/auth/me": true,
+	"/api/v1/auth/setup": true, "/api/v1/auth/login": true,
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		info := authn.Inspect(r, s.d.Config.TrustedProxy)
-		if !s.d.Config.AuthEnabled {
+		if !s.d.Config.AuthEnabled && !s.d.Config.LocalAuth {
 			if !authn.CheckCSRF(r, info.Host, nil) {
 				writeError(w, http.StatusForbidden, "cross-origin request refused")
 				return
@@ -102,11 +107,21 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			return
 		}
 		sess, ok := s.d.Sessions.Load(w, r, info.Secure())
+		if ok && s.d.Config.LocalAuth {
+			// A session from before the last password change is void.
+			gen, err := s.d.Local.Generation(r.Context())
+			ok = err == nil && gen != 0 && gen == sess.Gen
+		}
 		if ok {
 			ctx := context.WithValue(r.Context(), keyUser, sess.User)
 			r = r.WithContext(context.WithValue(ctx, keySession, sess))
 		}
 		if publicPaths[r.URL.Path] {
+			// Credentials are posted without a session yet, so the origin check is all that guards against login CSRF.
+			if !authn.CheckCSRF(r, info.Host, nil) {
+				writeError(w, http.StatusForbidden, "cross-origin request refused")
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

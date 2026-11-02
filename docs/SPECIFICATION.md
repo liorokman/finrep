@@ -161,6 +161,7 @@ Read-only tools: `list_accounts`, `get_account_summary`, `query_transactions`, `
 ## 10. Security
 - OIDC Authorization Code + PKCE (Authentik). ID token validated (issuer, audience, nonce, signature via JWKS). **Group membership is required:** the ID token must list the group `FinRep_Users` (configurable with `--oidc-required-group`; the claim is `groups`, configurable with `--oidc-groups-claim`, and may be a list or a single string). The match is exact and case-sensitive; a user who authenticates but is not in the group gets a 403 and no session. The group cannot be set to empty. Membership is checked at login only, so removing someone from the group takes effect when their session ends (24 h idle, 30 days at most). The single-tenant allow-list of subjects/emails is Phase 2.
 - Session: HMAC-signed, `HttpOnly`, `Secure` (when behind HTTPS), `SameSite=Lax`, sliding 24 h expiry. **Session key comes from configuration; with auth enabled the server refuses to start without it.**
+- Local login (`--auth=local`, for installs without an identity provider): the first visit shows a first-run screen that creates the single admin user; afterwards a sign-in form. The password is stored only as a salted PBKDF2-HMAC-SHA256 hash (600,000 iterations) in `local_auth`, and can be changed from Settings (current password required). Sessions are the same signed cookies as OIDC, additionally bound to a password generation, so changing the password ends every other session. Failed logins are throttled per client address (8 per 15 minutes). The session key is `FINREP_SESSION_SECRET` when set, otherwise generated and kept in `app_secrets`. `/api/v1/auth/setup` works only while no user exists; login and setup are same-origin checked. The OIDC mode is unchanged.
 - Dev mode (`--auth=off`) only binds to loopback.
 - CSRF: state-changing requests require a custom header plus same-origin check.
 - Uploads capped (default 10 MB); request bodies capped; `limit` capped.
@@ -169,7 +170,7 @@ Read-only tools: `list_accounts`, `get_account_summary`, `query_transactions`, `
 - Secrets (LLM key, session key, MCP token) live in env/config files excluded from git and Docker context; API never returns them.
 
 ## 11. Configuration and operations
-Flags with env fallbacks: `--port`, `--log-level`, `--mode web|mcp`, `--db-path`, `--auth on|off`, `--oidc-issuer`, `--oidc-client-id`, `--oidc-redirect`, `--oidc-required-group`, `--oidc-groups-claim`, `--session-secret`, (`FINREP_OIDC_CLIENT_SECRET[_FILE]`, optional, env only), `--mcp-token`, `--max-upload-mb`. Trusts `X-Forwarded-*` from a configured proxy list (Cosmos OS). Structured `slog` logging. Graceful shutdown. `/healthz`.
+Flags with env fallbacks: `--port`, `--log-level`, `--mode web|mcp`, `--db-path`, `--auth on|local|off`, `--oidc-issuer`, `--oidc-client-id`, `--oidc-redirect`, `--oidc-required-group`, `--oidc-groups-claim`, `--session-secret`, (`FINREP_OIDC_CLIENT_SECRET[_FILE]`, optional, env only), `--mcp-token`, `--max-upload-mb`. Trusts `X-Forwarded-*` from a configured proxy list (Cosmos OS). Structured `slog` logging. Graceful shutdown. `/healthz`.
 
 Build: `Taskfile.yaml` (`build`, `dev`, `test`, `lint`, `docker-build`). `Dockerfile` multi-stage, non-root user. `.dockerignore` and `.gitignore` exclude data, CSVs, PDFs, DB files and local config.
 

@@ -61,7 +61,7 @@ func run() error {
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	slog.Info("listening", "addr", cfg.Addr(), "auth", cfg.AuthEnabled, "db", cfg.DBPath)
+	slog.Info("listening", "addr", cfg.Addr(), "auth", authMode(cfg), "db", cfg.DBPath)
 
 	select {
 	case err := <-errCh:
@@ -73,4 +73,14 @@ func run() error {
 		defer cancel()
 		return srv.Shutdown(sctx)
 	}
+}
+
+func authMode(c *conf.Config) string {
+	switch {
+	case c.AuthEnabled:
+		return "oidc"
+	case c.LocalAuth:
+		return "local"
+	}
+	return "off"
 }

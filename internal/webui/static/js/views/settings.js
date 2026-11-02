@@ -1,6 +1,6 @@
 import { h, mount, ut, utBlock } from '../dom.js';
 import { icon } from '../icons.js';
-import { api } from '../api.js';
+import { api, setCSRF } from '../api.js';
 import { state, setReference, setPrefs } from '../state.js';
 import { money, plural } from '../format.js';
 import { drawer, toast, segmented, selectField, emptyState, statusBadge } from '../ui.js';
@@ -42,6 +42,22 @@ function runsCard(runs) {
         (r.status === 'DONE' || r.status === 'CANCELED') && h('button', { class: 'btn ghost sm', type: 'button', onclick: async () => { try { const x = await api.post('/api/v1/categorization/runs/' + r.id + '/undo'); toast(plural(x.reverted, 'transaction') + ' reset'); refreshBadges(); rerender(); } catch (e) { toast(e.message); } } }, icon('undo', 'sm'), 'Undo')))) : h('p', { class: 'muted small' }, 'No runs yet.')));
 }
 
+// ---- password (local login only) ----
+function passwordCard() {
+  const field = (label, name, auto) => h('div', { class: 'field' }, h('label', { for: 'pw-' + name }, label), h('input', { class: 'input', id: 'pw-' + name, name, type: 'password', autocomplete: auto, required: true }));
+  const form = h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    const v = (n) => form.elements[n].value;
+    if (v('next') !== v('again')) { toast('The two new passwords differ'); return; }
+    try {
+      const me = await api.put('/api/v1/auth/password', { current_password: v('current'), new_password: v('next') });
+      setCSRF(me.csrf_token); form.reset(); toast('Password changed. Other sessions were signed out');
+    } catch (err) { toast(err.message); }
+  } }, field('Current password', 'current', 'current-password'), field('New password (at least 10 characters)', 'next', 'new-password'), field('Repeat the new password', 'again', 'new-password'),
+  h('div', null, h('button', { class: 'btn primary', type: 'submit' }, 'Change password')));
+  return section('Password', 'The password of ' + ((state.me && state.me.name) || 'the admin user') + '. It is stored only as a salted hash. Changing it signs out every other session.', form);
+}
+
 const SCOPE_NAME = { LOCAL: 'Israel', FOREIGN: 'Abroad', ALL: 'All' };
 
 function billingSummary(a) {
@@ -77,6 +93,6 @@ export default {
     const [st, runs] = await Promise.all([api.get('/api/v1/settings'), api.get('/api/v1/categorization/runs')]);
     const prefs = section('Display', 'Names are always stored in both languages. This chooses which one leads.',
       h('div', { class: 'field' }, h('span', { class: 'label' }, 'Category names'), segmented('Category names', [{ value: 'en', label: 'English first' }, { value: 'he', label: 'עברית first' }], state.prefs.catLang, (v) => setPrefs({ catLang: v }))));
-    return h('div', { class: 'grid' }, h('div', { class: 'span-7 stack', style: { gap: 'var(--s-5)' } }, accountsCard(), modelCard(st.items)), h('div', { class: 'span-5 stack', style: { gap: 'var(--s-5)' } }, runsCard(runs.items), hintsCard(st.items), prefs));
+    return h('div', { class: 'grid' }, h('div', { class: 'span-7 stack', style: { gap: 'var(--s-5)' } }, accountsCard(), modelCard(st.items)), h('div', { class: 'span-5 stack', style: { gap: 'var(--s-5)' } }, runsCard(runs.items), hintsCard(st.items), state.authMode === 'local' && passwordCard(), prefs));
   },
 };

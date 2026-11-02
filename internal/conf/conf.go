@@ -22,7 +22,8 @@ type Config struct {
 	LogLevel        string
 	Mode            string // "web" or "mcp"
 	DBPath          string
-	AuthEnabled     bool
+	AuthEnabled     bool // login through OIDC (--auth=on)
+	LocalAuth       bool // login with a password kept in the database (--auth=local); AuthEnabled is then false
 	OIDCIssuer      string
 	OIDCClientID    string
 	OIDCRedirect    string
@@ -97,7 +98,7 @@ func Load(args []string, env Env, usage io.Writer) (*Config, error) {
 	fs.StringVar(&c.LogLevel, "log-level", str("LOG_LEVEL", "info"), "debug, info, warn or error")
 	fs.StringVar(&c.Mode, "mode", str("MODE", "web"), "web or mcp (stdio)")
 	fs.StringVar(&c.DBPath, "db-path", str("DB_PATH", "./data/finrep.db"), "SQLite database file")
-	fs.StringVar(&auth, "auth", str("AUTH", "on"), "on or off (off is for local development and requires a loopback bind)")
+	fs.StringVar(&auth, "auth", str("AUTH", "on"), "on (OIDC), local (a password kept in the database) or off (no login; local development only, requires a loopback bind)")
 	fs.StringVar(&c.OIDCIssuer, "oidc-issuer", str("OIDC_ISSUER", ""), "OIDC issuer URL")
 	fs.StringVar(&c.OIDCClientID, "oidc-client-id", str("OIDC_CLIENT_ID", ""), "OIDC client id")
 	fs.StringVar(&c.OIDCGroup, "oidc-required-group", str("OIDC_REQUIRED_GROUP", "FinRep_Users"), "group the ID token must contain to be allowed in")
@@ -125,13 +126,15 @@ func Load(args []string, env Env, usage io.Writer) (*Config, error) {
 	switch strings.ToLower(auth) {
 	case "on", "true":
 		c.AuthEnabled = true
+	case "local":
+		c.LocalAuth = true
 	case "off", "false":
 		c.AuthEnabled = false
 	default:
-		errs = append(errs, fmt.Errorf("--auth must be on or off, got %q", auth))
+		errs = append(errs, fmt.Errorf("--auth must be on, local or off, got %q", auth))
 	}
 	if c.Bind == "" {
-		if c.AuthEnabled {
+		if c.AuthEnabled || c.LocalAuth {
 			c.Bind = "0.0.0.0"
 		} else {
 			c.Bind = "127.0.0.1"
@@ -200,6 +203,11 @@ func (c *Config) validate() []error {
 		}
 		if strings.TrimSpace(c.OIDCGroupsClaim) == "" {
 			add("--oidc-groups-claim must not be empty with --auth=on")
+		}
+	} else if c.LocalAuth {
+		// The session secret is optional here: without one the application creates its own in the database.
+		if len(c.SessionSecret) > 0 && len(c.SessionSecret) < 32 {
+			add("the session secret must be at least 32 bytes (FINREP_SESSION_SECRET)")
 		}
 	} else if !isLoopback(c.Bind) {
 		add("--auth=off is only allowed on a loopback address, but --bind is %q", c.Bind)

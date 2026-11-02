@@ -162,3 +162,19 @@ func TestRequiredGroupDefaultsAndIsMandatory(t *testing.T) {
 		t.Errorf("auth off: %v", err)
 	}
 }
+
+func TestLocalAuth(t *testing.T) {
+	c, err := load(t, nil, "--auth=local")
+	if err != nil {
+		t.Fatalf("local auth needs no OIDC settings or session secret: %v", err)
+	}
+	if !c.LocalAuth || c.AuthEnabled || c.Bind != "0.0.0.0" {
+		t.Fatalf("%+v", c)
+	}
+	if _, err := load(t, map[string]string{"FINREP_SESSION_SECRET": "short"}, "--auth=local"); err == nil {
+		t.Error("a short session secret should be refused")
+	}
+	if c, err := load(t, map[string]string{"FINREP_SESSION_SECRET": secret32}, "--auth=local", "--bind=192.168.1.5"); err != nil || len(c.SessionSecret) != 32 {
+		t.Errorf("a configured secret and a LAN bind should be fine: %v", err)
+	}
+}

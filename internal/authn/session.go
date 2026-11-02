@@ -24,7 +24,8 @@ type User struct {
 type Session struct {
 	User
 	CSRF    string `json:"csrf"`
-	Started int64  `json:"iat"` // unix seconds; the session cannot be extended past Started + MaxAge
+	Gen     int64  `json:"gen,omitempty"` // local login only: the password generation the session was issued under
+	Started int64  `json:"iat"`           // unix seconds; the session cannot be extended past Started + MaxAge
 	Expires int64  `json:"exp"`
 }
 
@@ -109,8 +110,13 @@ func (s *Sessions) set(w http.ResponseWriter, secure bool, sess *Session) error 
 
 // Issue starts a session for a user.
 func (s *Sessions) Issue(w http.ResponseWriter, secure bool, u User) (*Session, error) {
+	return s.IssueGen(w, secure, u, 0)
+}
+
+// IssueGen starts a session bound to a password generation (local login).
+func (s *Sessions) IssueGen(w http.ResponseWriter, secure bool, u User, gen int64) (*Session, error) {
 	now := s.Now()
-	sess := &Session{User: u, CSRF: RandomToken(24), Started: now.Unix(), Expires: now.Add(s.TTL).Unix()}
+	sess := &Session{User: u, Gen: gen, CSRF: RandomToken(24), Started: now.Unix(), Expires: now.Add(s.TTL).Unix()}
 	return sess, s.set(w, secure, sess)
 }
 

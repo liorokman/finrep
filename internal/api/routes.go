@@ -12,6 +12,9 @@ func (s *Server) routes(m *http.ServeMux) {
 	m.HandleFunc("GET /auth/callback", s.callback)
 	m.HandleFunc("POST /auth/logout", s.logout)
 	m.HandleFunc("GET /api/v1/auth/me", s.me)
+	m.HandleFunc("POST /api/v1/auth/setup", s.localSetup)
+	m.HandleFunc("POST /api/v1/auth/login", s.localLogin)
+	m.HandleFunc("PUT /api/v1/auth/password", s.changePassword)
 
 	m.HandleFunc("GET /api/v1/accounts", s.listAccounts)
 	m.HandleFunc("POST /api/v1/accounts", s.createAccount)

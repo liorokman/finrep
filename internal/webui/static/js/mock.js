@@ -319,7 +319,7 @@ const staged = new Map();
 export async function mockRequest(method, path, { params = {}, body } = {}) {
   await delay(60 + rand() * 90);
   let m;
-  if (path === '/api/v1/auth/me') return { auth_enabled: false, authenticated: true, user: { sub: 'local', name: 'Alice Example', email: 'alice@example.com' } };
+  if (path === '/api/v1/auth/me') return { auth_enabled: false, mode: 'none', authenticated: true, user: { sub: 'local', name: 'Alice Example', email: 'alice@example.com' } };
   if (path === '/api/v1/accounts') return { items: ACC.map((a) => ({ ...a, balance: M(balance(a, TODAY)), opening_balance: M(a.type === 'BANK' ? OPENING : 0) })) };
   if (path === '/api/v1/categories' && method === 'GET') return { items: CATS.map((c) => ({ ...c, tx_count: TX.filter((t) => t.category_id === c.id).length })).filter((c) => !params.created_by || c.created_by === params.created_by) };
   if (path === '/api/v1/categories' && method === 'POST') {
