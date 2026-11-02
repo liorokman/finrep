@@ -158,5 +158,8 @@ task test-ui     # browser smoke test (needs Google Chrome)
 
 Layout: `cmd/finrep` (the binary), `internal/` (`ledger`, `importer`, `billing`, `categorize`, `reports`, `api`,
 `authn`, `mcpsrv`, `webui` and friends), `docs/SPECIFICATION.md` (what it does) and
-`docs/IMPLEMENTATION_PLAN.md` (how it was built). Real statements and exports are never committed; tests that
-use them are opt-in through `FINREP_BANK_DIR` and `FINREP_PDF_DIR`.
+`docs/IMPLEMENTATION_PLAN.md` (how it was built). Real statements and exports are never committed.
+
+## License
+
+Copyright 2026 Lior Okman. FinRep is licensed under the [Apache License, Version 2.0](LICENSE).
