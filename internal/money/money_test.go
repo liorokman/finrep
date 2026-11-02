@@ -66,7 +66,7 @@ func TestAddNoFloatDrift(t *testing.T) {
 }
 
 func TestStatementTotal(t *testing.T) {
-	// Cal 1001, 10/07/26 section of a real statement: purchases and employer
+	// A Cal statement section: purchases and employer
 	// coverage lines must net to the printed total.
 	lines := []string{"566.49", "1,003.05", "21.50", "-21.50", "-53.36", "53.36", "-513.67", "513.67"}
 	var sum Money
