@@ -92,6 +92,21 @@ export default {
     async function confirmOne(p) { try { await api.post('/api/v1/settlements/proposals/confirm', { statement_id: p.statement_id, account_id: p.account_id, bill_date: p.bill_date, bank_transaction_id: p.bank_tx_id }); toast('Matched ' + p.account_name + ' bill to the bank debit'); refreshBadges(); rerender(true); } catch (e) { toast(e.message); } }
     async function confirmAll() { try { const r = await api.post('/api/v1/settlements/proposals/confirm-all'); toast(plural(r.confirmed, 'bill') + ' matched'); rerender(true); } catch (e) { toast(e.message); } }
 
+    // ----- unlinked card payments: link one to a card whose statements are not imported -----
+    const unmatched = warn.unlinked_card_payments.slice().sort((a, b) => (a.date < b.date ? 1 : -1));
+    const picked = new Map();   // bank transaction id -> chosen card id
+    const linkRow = (u) => {
+      const btn = h('button', { class: 'btn sm', type: 'button', disabled: true, onclick: () => linkActivity(u, picked.get(u.transaction_id)) }, icon('link', 'sm'), 'Link');
+      const pick = h('select', { class: 'select', 'aria-label': 'Card paid by ' + u.payee, onchange: (e) => { picked.set(u.transaction_id, e.target.value); btn.disabled = !e.target.value; } },
+        h('option', { value: '' }, 'Choose a card…'), cards.map((c) => h('option', { value: c.id }, c.name + (c.owner ? ' · ' + c.owner : ''))));
+      return h('tr', null, h('td', null, date(u.date, { year: true })), h('td', null, utBlock(u.payee), u.has_proposal && h('div', { class: 'sub' }, 'A bill matches this debit — see the suggestions above')),
+        h('td', { class: 'num' }, h('span', { class: 'amount strong' }, money(u.amount))), h('td', null, pick), h('td', null, btn));
+    };
+    async function linkActivity(u, cardId) { try { await api.post('/api/v1/settlements/activity', { bank_transaction_id: u.transaction_id, account_id: cardId }); toast('Linked to the card. Importing its statement later replaces this placeholder.'); refreshBadges(); rerender(true); } catch (e) { toast(e.message); } }
+    const unlinkedCard = unmatched.length > 0 && cards.length > 0 && h('div', { class: 'card flush' },
+      h('div', { class: 'card-h' }, h('div', { class: 'grow' }, h('h2', null, 'Unlinked card payments'), h('div', { class: 'sub' }, plural(unmatched.length, 'bank debit') + ' to card bills with no statement. Link one to a card to record it there as “activity”; importing the real statement later replaces it.'))),
+      h('div', { class: 'table-wrap' }, h('table', { class: 't dense', 'aria-label': 'Unlinked card payments' }, h('thead', null, h('tr', null, ['Date', 'Bank line', 'Amount', 'Card', ''].map((c, i) => h('th', { scope: 'col', class: i === 2 ? 'num' : '' }, c)))), h('tbody', null, unmatched.map(linkRow)))));
+
     // ----- outflow timeline -----
     const days = up.items.filter((d) => !F.card || d.statements.some((s) => s.account_id === F.card));
     const horizon = days.slice(0, 8);
@@ -132,7 +147,7 @@ export default {
     const allTiles = [...bankTiles, ...tiles];
     return h('div', { class: 'stack', style: { gap: 'var(--s-5)' } },
       allTiles.length ? h('div', { class: 'cardtiles' }, allTiles) : emptyState('card', 'No accounts yet', 'Add your bank account and cards in Settings.', h('a', { class: 'btn sm', href: '#/settings' }, 'Open Settings')),
-      bankPanel ? [matchCard ? h('div', { class: 'grid' }, h('div', { class: 'span-12' }, matchCard)) : null, bankPanel] : [h('div', { class: 'grid' }, outflow, matchCard || null), stmtCard]);
+      bankPanel ? [matchCard ? h('div', { class: 'grid' }, h('div', { class: 'span-12' }, matchCard)) : null, unlinkedCard || null, bankPanel] : [h('div', { class: 'grid' }, outflow, matchCard || null), unlinkedCard || null, stmtCard]);
   },
 };
 

@@ -226,6 +226,29 @@ func (s *Server) confirmAllProposals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"confirmed": n})
 }
 
+// linkActivity links a bank debit to a card whose statement is not available, through a placeholder
+// "activity" charge that a later import of the statement replaces.
+func (s *Server) linkActivity(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		BankTransactionID string `json:"bank_transaction_id"`
+		AccountID         string `json:"account_id"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		fail(w, r, err)
+		return
+	}
+	if in.BankTransactionID == "" || in.AccountID == "" {
+		fail(w, r, bad("bank_transaction_id and account_id are required"))
+		return
+	}
+	sid, err := s.d.Billing.LinkActivity(r.Context(), in.BankTransactionID, in.AccountID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"statement_id": sid})
+}
+
 func (s *Server) markExternal(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		BankTransactionID string `json:"bank_transaction_id"`

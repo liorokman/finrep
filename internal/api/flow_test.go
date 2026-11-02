@@ -174,6 +174,10 @@ func TestImportMatchCategorizeAndReportJourney(t *testing.T) {
 	g.call("POST", "/api/v1/settlements", map[string]any{"account_id": card, "bill_date": "2026-07-10", "bank_transaction_id": debit}).want(201)
 	g.call("POST", "/api/v1/settlements", map[string]any{"bank_transaction_id": debit}).want(400)
 	g.call("POST", "/api/v1/settlements", map[string]any{"account_id": card, "bill_date": "2026-07-10"}).want(400)
+	// An activity placeholder needs both ids, and not a debit that already pays a bill.
+	g.call("POST", "/api/v1/settlements/activity", map[string]any{"bank_transaction_id": debit}).want(400)
+	g.call("POST", "/api/v1/settlements/activity", map[string]any{"bank_transaction_id": debit, "account_id": card}).want(400)
+	g.call("POST", "/api/v1/settlements/activity", map[string]any{"bank_transaction_id": "nope", "account_id": card}).want(404)
 
 	// --- categorization with a fake model ---
 	g.call("POST", "/api/v1/categorization/runs", map[string]any{}).want(409) // not configured yet

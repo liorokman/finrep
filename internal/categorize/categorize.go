@@ -145,7 +145,7 @@ func (s *worker) pending(ctx context.Context) ([]*group, int, error) {
 	}
 	rows, err := s.st.QueryContext(ctx, `SELECT t.id, t.date, t.amount_minor, t.currency, COALESCE(NULLIF(t.payee_cleaned, ''), t.payee_raw), COALESCE(t.notes, ''), a.account_type
 		FROM transactions t JOIN accounts a ON a.id = t.account_id
-		WHERE t.category_id IS NULL AND t.categorized_by = 'UNSET' AND t.kind <> 'EMPLOYER_COVERAGE'
+		WHERE t.category_id IS NULL AND t.categorized_by = 'UNSET' AND t.kind <> 'EMPLOYER_COVERAGE' AND t.import_key NOT LIKE 'activity:%'
 		ORDER BY t.date DESC, t.id`)
 	if err != nil {
 		return nil, 0, err

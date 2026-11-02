@@ -51,6 +51,7 @@ func (s *Server) routes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/settlements/proposals", s.listProposals)
 	m.HandleFunc("POST /api/v1/settlements/proposals/confirm", s.confirmProposal)
 	m.HandleFunc("POST /api/v1/settlements/proposals/confirm-all", s.confirmAllProposals)
+	m.HandleFunc("POST /api/v1/settlements/activity", s.linkActivity)
 	m.HandleFunc("POST /api/v1/external-payments", s.markExternal)
 	m.HandleFunc("DELETE /api/v1/external-payments/{id}", s.unmarkExternal)
 	m.HandleFunc("GET /api/v1/billing/review", s.billingReview)

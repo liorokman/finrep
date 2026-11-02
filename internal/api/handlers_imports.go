@@ -268,13 +268,19 @@ func (s *Server) commitImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.staged.drop(id)
+	// A placeholder "activity" line for a bill whose statement was not available gives way to the real one.
+	replaced, err := s.d.Billing.ReplaceActivity(r.Context(), accID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
 	assigned, err := s.d.Billing.AssignBillDates(r.Context(), accID)
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"batch_id": res.BatchID, "account_id": accID, "inserted": res.Inserted, "duplicates": res.Duplicates,
-		"skipped": list(res.Skipped), "rejected": list(res.Rejected), "warnings": list(res.Warnings), "bill_dates_assigned": assigned})
+		"skipped": list(res.Skipped), "rejected": list(res.Rejected), "warnings": list(res.Warnings), "bill_dates_assigned": assigned, "activity_replaced": replaced})
 }
 
 func (s *Server) discardStaged(w http.ResponseWriter, r *http.Request) {

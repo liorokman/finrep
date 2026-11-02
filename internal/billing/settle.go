@@ -23,7 +23,17 @@ const (
 // date (spec 6.2, rule 1). The pair's earlier rejection, if any, is forgotten.
 func (s *Service) Settle(ctx context.Context, statementID, bankTxID string, amount *money.Money, src Source) (string, error) {
 	var id string
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) (err error) {
+		id, err = settleTx(ctx, tx, statementID, bankTxID, amount, src)
+		return err
+	})
+	return id, err
+}
+
+// settleTx is Settle inside a transaction the caller owns.
+func settleTx(ctx context.Context, tx *sql.Tx, statementID, bankTxID string, amount *money.Money, src Source) (string, error) {
+	var id string
+	err := func() error {
 		if err := linkUnlinked(ctx, tx, statementID); err != nil {
 			return err
 		}
@@ -94,7 +104,7 @@ func (s *Service) Settle(ctx context.Context, statementID, bankTxID string, amou
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE transactions SET bill_date = ?, bill_date_source = 'BANK', updated_at = CURRENT_TIMESTAMP WHERE statement_id = ?`, bankDate, statementID)
 		return err
-	})
+	}()
 	return id, err
 }
 
@@ -111,6 +121,9 @@ func (s *Service) Unsettle(ctx context.Context, settlementID string) error {
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM settlements WHERE id = ?`, settlementID); err != nil {
 			return err
+		}
+		if removed, err := dropActivity(ctx, tx, stmtID, bankID); err != nil || removed {
+			return err // an activity placeholder has nothing to re-match, so no rejection is remembered
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO settlement_rejections (statement_id, bank_transaction_id) VALUES (?, ?)`, stmtID, bankID); err != nil {
 			return err
